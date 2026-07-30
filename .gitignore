@@ -1,0 +1,19 @@
+# audio: never commit these
+*.wav
+*.aiff
+*.aif
+*.flac
+*.mp3
+*.m4a
+
+# python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# local output
+outputs/
+*.log
+.DS_Store
+.claude/settings.local.json
