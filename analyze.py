@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """Track Analyzer — release readiness for darksynth/industrial."""
 
-import argparse, json, os, sys
+import argparse, glob, json, os, sys
 import numpy as np
 import librosa
 import pyloudnorm as pyln
 from scipy import signal
+
+DEFAULT_EXTENSIONS = {".wav", ".aiff", ".aif", ".flac"}
 
 BANDS = [
     ("sub",       20,    60),
@@ -491,6 +493,74 @@ def print_ranking(results):
     print()
 
 
+# ── Input resolution ─────────────────────────────────────────────────────────
+
+def parse_extensions(spec):
+    if not spec:
+        return set(DEFAULT_EXTENSIONS)
+    exts = set()
+    for part in spec.split(","):
+        part = part.strip().lower()
+        if not part:
+            continue
+        exts.add(part if part.startswith(".") else f".{part}")
+    return exts
+
+
+def _is_glob(entry):
+    return any(ch in entry for ch in "*?[")
+
+
+def _collect_dir(dir_path, recursive, extensions):
+    matches = []
+    if recursive:
+        for root, _dirs, files in os.walk(dir_path):
+            for name in files:
+                if os.path.splitext(name)[1].lower() in extensions:
+                    matches.append(os.path.join(root, name))
+    else:
+        for name in os.listdir(dir_path):
+            full = os.path.join(dir_path, name)
+            if os.path.isfile(full) and os.path.splitext(name)[1].lower() in extensions:
+                matches.append(full)
+    return matches
+
+
+def resolve_inputs(entries, recursive=False, extensions=None):
+    """Expand a list of file/directory/glob entries into a sorted, deduplicated
+    list of file paths. Returns (files, warnings) — warnings are human-readable
+    messages for entries that resolved to nothing (missing path, empty
+    directory, or glob with no matches); callers should surface them but keep
+    going, only treating an empty final `files` list as fatal."""
+    extensions = extensions if extensions is not None else DEFAULT_EXTENSIONS
+    found, warnings = [], []
+
+    for entry in entries:
+        if _is_glob(entry):
+            matches = glob.glob(entry, recursive=recursive)
+            expanded = []
+            for m in matches:
+                if os.path.isdir(m):
+                    expanded.extend(_collect_dir(m, recursive, extensions))
+                elif os.path.isfile(m):
+                    expanded.append(m)
+            if not expanded:
+                warnings.append(f"No files matched pattern: {entry}")
+            found.extend(expanded)
+        elif os.path.isdir(entry):
+            matches = _collect_dir(entry, recursive, extensions)
+            if not matches:
+                warnings.append(f"No matching audio files in directory: {entry}")
+            found.extend(matches)
+        elif os.path.isfile(entry):
+            found.append(entry)
+        else:
+            warnings.append(f"Not found: {entry}")
+
+    deduped = {os.path.realpath(f): f for f in found}
+    return sorted(deduped.values()), warnings
+
+
 # ── Core ──────────────────────────────────────────────────────────────────────
 
 def analyze(path, ref_bands=None):
@@ -541,12 +611,26 @@ def main():
         description="Track Analyzer — WAV release readiness for darksynth/industrial",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("inputs", nargs="+", help="WAV file path(s)")
+    parser.add_argument("inputs", nargs="+",
+                        help="File path(s), directory path(s), and/or glob pattern(s)")
     parser.add_argument("--reference", "-r", metavar="WAV",
                         help="Reference WAV for frequency comparison")
     parser.add_argument("--json", dest="as_json", action="store_true",
                         help="Output as JSON")
+    parser.add_argument("--recursive", action="store_true",
+                        help="Recurse into subfolders when an input is a directory")
+    parser.add_argument("--ext", metavar="EXTS",
+                        help="Comma-separated extensions to match in directories "
+                             f"(default: {','.join(sorted(DEFAULT_EXTENSIONS))})")
     args = parser.parse_args()
+
+    extensions = parse_extensions(args.ext)
+    paths, warnings = resolve_inputs(args.inputs, recursive=args.recursive, extensions=extensions)
+    for w in warnings:
+        print(f"Warning: {w}", file=sys.stderr)
+    if not paths:
+        print("Error: no matching audio files found", file=sys.stderr)
+        sys.exit(1)
 
     ref_bands = None
     if args.reference:
@@ -558,7 +642,7 @@ def main():
             sys.exit(1)
 
     results = []
-    for path in args.inputs:
+    for path in paths:
         try:
             results.append(analyze(path, ref_bands))
         except FileNotFoundError:

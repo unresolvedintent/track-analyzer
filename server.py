@@ -5,7 +5,7 @@ import os, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from mcp.server.fastmcp import FastMCP
-from analyze import analyze, load_audio, measure_bands, _clean
+from analyze import analyze, load_audio, measure_bands, _clean, resolve_inputs, parse_extensions
 
 mcp = FastMCP(
     "track-analyzer",
@@ -26,13 +26,22 @@ def _verdict(ov: float) -> str:
 def analyze_tracks(
     paths: list[str],
     reference: str | None = None,
+    recursive: bool = False,
+    extensions: list[str] | None = None,
 ) -> dict:
     """
     Analyze WAV files for release readiness.
 
     Args:
-        paths: One or more absolute paths to WAV files.
+        paths: One or more paths — each may be an absolute file path, a
+            directory (non-recursive by default), or a glob pattern.
         reference: Optional reference WAV path for frequency comparison.
+        recursive: When a path is a directory, also scan its subfolders.
+            Also enables recursive "**" expansion in glob patterns.
+        extensions: Extensions to match when a path is a directory, e.g.
+            [".wav", ".flac"]. Defaults to .wav/.aiff/.aif/.flac. Files
+            matched directly by a glob pattern are used as-is regardless
+            of this filter.
     """
     ref_bands = None
     if reference:
@@ -44,11 +53,11 @@ def analyze_tracks(
         except Exception as e:
             return {"error": f"Failed to load reference: {e}"}
 
-    results, errors = [], []
-    for path in paths:
-        if not os.path.isfile(path):
-            errors.append(f"File not found: {path}")
-            continue
+    ext_set = parse_extensions(",".join(extensions)) if extensions else None
+    resolved, warnings = resolve_inputs(paths, recursive=recursive, extensions=ext_set)
+
+    results, errors = [], list(warnings)
+    for path in resolved:
         try:
             r = analyze(path, ref_bands)
             r["verdict"] = _verdict(r["overall"])
