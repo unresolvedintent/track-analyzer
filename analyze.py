@@ -9,25 +9,32 @@ from scipy import signal
 
 DEFAULT_EXTENSIONS = {".wav", ".aiff", ".aif", ".flac"}
 
-BANDS = [
-    ("sub",       20,    60),
-    ("bass",      60,   250),
-    ("low-mid",  250,  1000),
-    ("high-mid", 1000,  6000),
-    ("presence", 6000, 12000),
-    ("air",     12000, 20000),
-]
-# Expected delta vs bass band (min_dB, max_dB) for darksynth/industrial
-GENRE_PROFILE = {
-    "sub":      (-3,   5),
-    "bass":     ( 0,   0),
-    "low-mid":  (-16,  -7),
-    "high-mid": (-26, -14),
-    "presence": (-36, -22),
-    "air":      (-52, -30),
-}
-WEIGHTS = {"technical": .25, "frequency": .20, "stereo": .20,
-           "dynamics": .15, "artifacts": .10, "genre": .10}
+DEFAULT_RUBRIC_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                    "rubric_darksynth_v2.json")
+
+RUBRIC = None
+BANDS = None
+GENRE_PROFILE = None
+WEIGHTS = None
+
+
+def load_rubric(path=DEFAULT_RUBRIC_PATH):
+    with open(path) as f:
+        return json.load(f)
+
+
+def apply_rubric(data):
+    """Install a loaded rubric as the active configuration for measurement
+    and scoring. BANDS/GENRE_PROFILE/WEIGHTS are derived views kept for
+    readability at call sites; RUBRIC is the source of truth."""
+    global RUBRIC, BANDS, GENRE_PROFILE, WEIGHTS
+    RUBRIC = data
+    BANDS = [(b["name"], b["lo"], b["hi"]) for b in data["bands"]]
+    GENRE_PROFILE = {k: tuple(v) for k, v in data["genre_profile"].items()}
+    WEIGHTS = data["weights"]
+
+
+apply_rubric(load_rubric())
 
 
 # ── Audio ─────────────────────────────────────────────────────────────────────
@@ -196,51 +203,53 @@ def measure_artifacts(y, sr):
 # ── Scoring (each returns (0-100, [(priority, actionable_msg)]) ───────────────
 
 def score_technical(loud):
+    cfg = RUBRIC["technical"]
     s, issues = 100, []
     if loud["clips"] > 0:
-        s -= 40
+        s -= cfg["clip_penalty"]
         issues.append((0, f"{loud['clips']} clipped sample(s) — reduce pre-limiter gain"))
-    if loud["true_peak"] > -1.0:
-        s -= 25
+    if loud["true_peak"] > cfg["true_peak_hard_db"]:
+        s -= cfg["true_peak_hard_penalty"]
         issues.append((1, f"True peak {loud['true_peak']:.1f} dBTP — hard limit to -1.0 dBTP before export"))
-    elif loud["true_peak"] > -3.0:
-        s -= 8
+    elif loud["true_peak"] > cfg["true_peak_soft_db"]:
+        s -= cfg["true_peak_soft_penalty"]
         issues.append((6, f"True peak {loud['true_peak']:.1f} dBTP — tighten limiter ceiling to -1.5"))
     lufs = loud["integrated"]
     if np.isfinite(lufs):
-        if lufs > -9:
-            s -= 20
+        if lufs > cfg["lufs_hot_db"]:
+            s -= cfg["lufs_hot_penalty"]
             issues.append((2, f"Integrated {lufs:.1f} LUFS too hot — lower limiter threshold"))
-        elif lufs < -23:
-            s -= 10
+        elif lufs < cfg["lufs_quiet_db"]:
+            s -= cfg["lufs_quiet_penalty"]
             issues.append((7, f"Integrated {lufs:.1f} LUFS too quiet — check gain staging"))
-        elif lufs > -12 or lufs < -20:
-            s -= 5
+        elif lufs > cfg["lufs_warn_hot_db"] or lufs < cfg["lufs_warn_quiet_db"]:
+            s -= cfg["lufs_warn_penalty"]
     else:
-        s -= 15
-    if loud["dc"] > 0.01:
-        s -= 20
+        s -= cfg["lufs_missing_penalty"]
+    if loud["dc"] > cfg["dc_hard"]:
+        s -= cfg["dc_hard_penalty"]
         issues.append((3, f"DC offset {loud['dc']:.4f} — apply DC filter before export"))
-    elif loud["dc"] > 0.001:
-        s -= 5
+    elif loud["dc"] > cfg["dc_soft"]:
+        s -= cfg["dc_soft_penalty"]
     return max(0, min(100, s)), issues
 
 
 def score_frequency(bands, ref_bands=None):
+    cfg = RUBRIC["frequency"]
     if ref_bands is None:
-        s, issues = 80, []
+        s, issues = cfg["no_reference_base"], []
         sub, bass = bands.get("sub"), bands.get("bass")
         if sub is not None and bass is not None:
-            if sub < bass - 12:
-                s -= 12
+            if sub < bass - cfg["sub_vs_bass_gap_db"]:
+                s -= cfg["sub_vs_bass_penalty"]
                 issues.append((9, f"Sub very weak vs bass ({sub-bass:+.0f}dB) — check low-end content"))
         hm = bands.get("high-mid")
-        if hm is not None and bass is not None and hm > bass - 8:
-            s -= 10
+        if hm is not None and bass is not None and hm > bass - cfg["highmid_vs_bass_gap_db"]:
+            s -= cfg["highmid_vs_bass_penalty"]
             issues.append((8, f"High-mid {hm-bass:+.0f}dB vs bass — may sound harsh/thin"))
         return max(0, min(100, s)), issues
 
-    s, issues, deltas = 100, [], {}
+    s, issues, deltas = cfg["reference_base"], [], {}
     for name, *_ in BANDS:
         t, r = bands.get(name), ref_bands.get(name)
         if t is None or r is None:
@@ -248,98 +257,100 @@ def score_frequency(bands, ref_bands=None):
         d = t - r
         deltas[name] = d
         abd = abs(d)
-        if abd > 9:
-            s -= 18
-        elif abd > 6:
-            s -= 10
-        elif abd > 3:
-            s -= 4
+        for th in cfg["delta_thresholds"]:
+            if abd > th["gt_db"]:
+                s -= th["penalty"]
+                break
 
     hz_hint = {"sub": "40Hz shelf", "bass": "100Hz", "low-mid": "350Hz",
                "high-mid": "2kHz", "presence": "8kHz", "air": "14kHz shelf"}
     for name, d in sorted(deltas.items(), key=lambda x: abs(x[1]), reverse=True)[:2]:
-        if abs(d) > 3:
+        if abs(d) > cfg["issue_threshold_db"]:
             action = "cut" if d > 0 else "boost"
             issues.append((4, f"{name} {d:+.1f}dB vs reference — {action} {hz_hint.get(name, name)}"))
     return max(0, min(100, s)), issues
 
 
 def score_stereo(stereo, phase):
+    cfg = RUBRIC["stereo"]
     s, issues = 100, []
     if phase["sustained_neg"]:
-        s -= 35
+        s -= cfg["sustained_neg_penalty"]
         worst = min(stereo["band_corr"], key=stereo["band_corr"].get)
         issues.append((1, f"Phase correlation negative (min {phase['min']:.2f}) "
                           f"— check stereo widener, worst in {worst}"))
     sub_c = stereo["band_corr"].get("sub", 1.0)
-    if sub_c < 0.7:
-        s -= 25
+    if sub_c < cfg["sub_corr_hard"]:
+        s -= cfg["sub_corr_hard_penalty"]
         issues.append((2, f"Sub L/R correlation {sub_c:.2f} — collapse sub below 80Hz to mono"))
-    elif sub_c < 0.85:
-        s -= 12
+    elif sub_c < cfg["sub_corr_soft"]:
+        s -= cfg["sub_corr_soft_penalty"]
         issues.append((6, f"Sub L/R correlation {sub_c:.2f} — consider mono filter at 80Hz"))
-    if stereo["mono_db"] < -3.0:
-        s -= 20
+    if stereo["mono_db"] < cfg["mono_hard_db"]:
+        s -= cfg["mono_hard_penalty"]
         issues.append((3, f"Mono compat {stereo['mono_db']:.1f}dB loss — anti-phase content present"))
-    elif stereo["mono_db"] < -1.0:
-        s -= 8
+    elif stereo["mono_db"] < cfg["mono_soft_db"]:
+        s -= cfg["mono_soft_penalty"]
         issues.append((7, f"Mono compat {stereo['mono_db']:.1f}dB loss — verify mono playback"))
-    if stereo["width"] > 1.1:
-        s -= 10
+    if stereo["width"] > cfg["width_max"]:
+        s -= cfg["width_penalty"]
         issues.append((8, f"Stereo width {stereo['width']:.2f} M/S ratio — may fold oddly on some systems"))
     return max(0, min(100, s)), issues
 
 
 def score_dynamics(dyn, loud):
+    cfg = RUBRIC["dynamics"]
     s, issues = 100, []
     lra = loud["lra"]
     if np.isfinite(lra):
-        if lra < 2:
-            s -= 25
+        if lra < cfg["lra_severe"]:
+            s -= cfg["lra_severe_penalty"]
             issues.append((3, f"LRA {lra:.1f} LU — severely over-compressed, ease limiter by 4+ dB"))
-        elif lra < 4:
-            s -= 12
+        elif lra < cfg["lra_over"]:
+            s -= cfg["lra_over_penalty"]
             issues.append((5, f"LRA {lra:.1f} LU — over-compressed, ease limiter threshold"))
-        elif lra > 14:
-            s -= 8
+        elif lra > cfg["lra_loose"]:
+            s -= cfg["lra_loose_penalty"]
             issues.append((7, f"LRA {lra:.1f} LU — very dynamic, may need limiting for streaming"))
-    if dyn["crest"] < 6:
-        s -= 20
+    if dyn["crest"] < cfg["crest_hard"]:
+        s -= cfg["crest_hard_penalty"]
         issues.append((4, f"Crest factor {dyn['crest']:.1f}dB — heavily limited, check limiter settings"))
-    elif dyn["crest"] < 9:
-        s -= 8
-    if dyn["psr"] < 4:
-        s -= 15
+    elif dyn["crest"] < cfg["crest_soft"]:
+        s -= cfg["crest_soft_penalty"]
+    if dyn["psr"] < cfg["psr_min"]:
+        s -= cfg["psr_penalty"]
         issues.append((6, f"PSR {dyn['psr']:.1f}dB — over-limited, increase peak-to-loudness margin"))
     return max(0, min(100, s)), issues
 
 
 def score_artifacts(arts):
+    cfg = RUBRIC["artifacts"]
     s, issues = 100, []
     if arts["clicks"] > 0:
-        s -= min(40, arts["clicks"] * 15)
+        s -= min(cfg["click_penalty_cap"], arts["clicks"] * cfg["click_penalty_per"])
         issues.append((2, f"{arts['clicks']} click(s) detected — check edit points and clip limiting"))
     nf = arts["noise_floor"]
     if nf is not None:
-        if nf > -40:
-            s -= 20
+        if nf > cfg["noise_hard_db"]:
+            s -= cfg["noise_hard_penalty"]
             issues.append((4, f"Noise floor {nf:.0f}dB — check source recordings for hum/hiss"))
-        elif nf > -50:
-            s -= 8
+        elif nf > cfg["noise_soft_db"]:
+            s -= cfg["noise_soft_penalty"]
             issues.append((8, f"Noise floor {nf:.0f}dB — mild background noise"))
     if arts["silence_gaps"] > 0:
-        s -= min(20, arts["silence_gaps"] * 10)
+        s -= min(cfg["gap_penalty_cap"], arts["silence_gaps"] * cfg["gap_penalty_per"])
         issues.append((5, f"{arts['silence_gaps']} internal silence gap(s) — dead spots in arrangement"))
-    if arts["zcr_spikes"] > 5:
-        s -= 10
+    if arts["zcr_spikes"] > cfg["zcr_spike_threshold"]:
+        s -= cfg["zcr_spike_penalty"]
         issues.append((7, f"{arts['zcr_spikes']} zero-crossing anomalies — possible edit glitches"))
     return max(0, min(100, s)), issues
 
 
 def score_genre(bands):
+    cfg = RUBRIC["genre"]
     bass_val = bands.get("bass")
     if bass_val is None:
-        return 70, []
+        return cfg["fallback_score"], []
     s, issues, deviations = 100, [], []
     for name, (lo, hi) in GENRE_PROFILE.items():
         if name == "bass":
@@ -349,13 +360,13 @@ def score_genre(bands):
             continue
         actual_delta = val - bass_val
         center = (lo + hi) / 2
-        tolerance = (hi - lo) / 2 + 3
+        tolerance = (hi - lo) / 2 + cfg["tolerance_margin_db"]
         overshoot = max(0.0, abs(actual_delta - center) - tolerance)
-        if overshoot > 6:
-            s -= 12
+        if overshoot > cfg["overshoot_hard"]:
+            s -= cfg["overshoot_hard_penalty"]
             deviations.append((overshoot, name, actual_delta, center))
         elif overshoot > 0:
-            s -= 5
+            s -= cfg["overshoot_soft_penalty"]
     if deviations:
         _, worst_name, actual_delta, target = max(deviations, key=lambda x: x[0])
         diff = actual_delta - target
@@ -383,19 +394,23 @@ def top_blockers(all_issues, n=3):
 
 
 def fix_effort(scores, ov):
-    if min(scores.values()) < 50 or ov < 60:
+    cfg = RUBRIC["fix_effort"]
+    if min(scores.values()) < cfg["high_min_score"] or ov < cfg["high_overall"]:
         return "High"
-    if min(scores.values()) >= 70 and ov >= 80:
+    if min(scores.values()) >= cfg["low_min_score"] and ov >= cfg["low_overall"]:
         return "Low"
     return "Medium"
 
 
 def verdict(ov):
-    return "Ready for release" if ov > 80 else ("Needs work" if ov >= 60 else "Significant issues")
+    cfg = RUBRIC["verdict"]
+    return ("Ready for release" if ov > cfg["ready_over"]
+            else ("Needs work" if ov >= cfg["needs_work_at_least"] else "Significant issues"))
 
 
 def status_of(s):
-    return "PASS" if s >= 80 else ("WARNING" if s >= 60 else "FAIL")
+    cfg = RUBRIC["status"]
+    return "PASS" if s >= cfg["pass_at_least"] else ("WARNING" if s >= cfg["warning_at_least"] else "FAIL")
 
 
 # ── Output ────────────────────────────────────────────────────────────────────
@@ -455,8 +470,9 @@ def print_measured_data(raw, ref_bands=None):
     print(f"  Artifacts   {arts['clicks']} clicks   DC {loud['dc']:+.6f}   noise floor {nf_str}")
 
 
-def print_track_report(scores, ov, blockers, effort, raw, ref_bands=None):
-    print(f"VERDICT: {verdict(ov)} — {ov:.0f}%")
+def print_track_report(scores, ov, blockers, effort, raw, ref_bands=None, rubric_version=None):
+    rv = f"   [rubric {rubric_version}]" if rubric_version else ""
+    print(f"VERDICT: {verdict(ov)} — {ov:.0f}%{rv}")
     print()
     print(f"{'Category':<20} | {'Score':>5} | Status")
     print(f"{'-'*20}-+-{'-'*5}-+-{'-'*7}")
@@ -586,7 +602,7 @@ def analyze(path, ref_bands=None):
     effort = fix_effort(scores, ov)
 
     return {"file": path, "scores": scores, "overall": ov,
-            "blockers": blockers, "effort": effort,
+            "blockers": blockers, "effort": effort, "rubric_version": RUBRIC["version"],
             "raw": {"loudness": loud, "bands": bands, "stereo": stereo,
                     "phase": phase, "dynamics": dyn, "artifacts": arts}}
 
@@ -622,7 +638,15 @@ def main():
     parser.add_argument("--ext", metavar="EXTS",
                         help="Comma-separated extensions to match in directories "
                              f"(default: {','.join(sorted(DEFAULT_EXTENSIONS))})")
+    parser.add_argument("--rubric", metavar="JSON", default=DEFAULT_RUBRIC_PATH,
+                        help=f"Rubric config to score against (default: {DEFAULT_RUBRIC_PATH})")
     args = parser.parse_args()
+
+    try:
+        apply_rubric(load_rubric(args.rubric))
+    except (OSError, json.JSONDecodeError) as e:
+        print(f"Error: failed to load rubric {args.rubric}: {e}", file=sys.stderr)
+        sys.exit(1)
 
     extensions = parse_extensions(args.ext)
     paths, warnings = resolve_inputs(args.inputs, recursive=args.recursive, extensions=extensions)
@@ -666,12 +690,12 @@ def main():
             print(name)
             print(f"{'=' * 60}")
             print_track_report(r["scores"], r["overall"], r["blockers"], r["effort"],
-                               r["raw"], ref_bands)
+                               r["raw"], ref_bands, r["rubric_version"])
             print()
     else:
         r = results[0]
         print_track_report(r["scores"], r["overall"], r["blockers"], r["effort"],
-                           r["raw"], ref_bands)
+                           r["raw"], ref_bands, r["rubric_version"])
 
 
 if __name__ == "__main__":
