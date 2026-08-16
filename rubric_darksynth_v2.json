@@ -1,12 +1,11 @@
 {
-  "version": "v1",
+  "version": "v2",
   "weights": {
     "technical": 0.25,
-    "frequency": 0.20,
-    "stereo": 0.20,
-    "dynamics": 0.15,
-    "artifacts": 0.10,
-    "genre": 0.10
+    "frequency": 0.24,
+    "stereo": 0.23,
+    "dynamics": 0.18,
+    "artifacts": 0.10
   },
   "bands": [
     {"name": "sub",       "lo": 20,    "hi": 60},
@@ -24,32 +23,50 @@
     "presence": [-36, -22],
     "air":      [-52, -30]
   },
+  "genre": {
+    "fallback_score": 70,
+    "tolerance_margin_db": 3,
+    "overshoot_hard": 6,
+    "overshoot_hard_penalty": 12,
+    "overshoot_soft_penalty": 5
+  },
   "technical": {
-    "clip_penalty": 40,
-    "true_peak_hard_db": -1.0,
-    "true_peak_hard_penalty": 25,
-    "true_peak_soft_db": -3.0,
-    "true_peak_soft_penalty": 8,
-    "lufs_hot_db": -9,
-    "lufs_hot_penalty": 20,
-    "lufs_quiet_db": -23,
-    "lufs_quiet_penalty": 10,
-    "lufs_warn_hot_db": -12,
-    "lufs_warn_quiet_db": -20,
-    "lufs_warn_penalty": 5,
-    "lufs_missing_penalty": 15,
-    "dc_hard": 0.01,
-    "dc_hard_penalty": 20,
-    "dc_soft": 0.001,
-    "dc_soft_penalty": 5
+    "component_weights": {"tp": 0.40, "clip": 0.25, "lufs": 0.15, "dc": 0.10, "format": 0.10},
+    "tp_full_db": -1.0,
+    "tp_slope_per_db": 40,
+    "tp_oversample_low_sr_max": 48000,
+    "tp_oversample_high_sr_min": 88200,
+    "tp_oversample_low_factor": 4,
+    "tp_oversample_high_factor": 2,
+    "clip_min_run": 3,
+    "clip_confirmed_thresh": 0.9999,
+    "lufs_target": -14,
+    "lufs_slope_per_lu": 5,
+    "lufs_floor": 60,
+    "dc_full": 0.001,
+    "dc_mid": 0.01,
+    "dc_mid_score": 70,
+    "dc_floor": 40,
+    "format_lossless_score": 100,
+    "format_mp3_high_score": 75,
+    "format_mp3_low_score": 60,
+    "format_mp3_bitrate_kbps": 256,
+    "format_hidden_lossy_score": 60
   },
   "frequency": {
-    "no_reference_base": 80,
-    "sub_vs_bass_gap_db": 12,
-    "sub_vs_bass_penalty": 12,
-    "highmid_vs_bass_gap_db": 8,
-    "highmid_vs_bass_penalty": 10,
-    "reference_base": 100,
+    "component_weights": {
+      "sub": 0.15, "bass": 0.15, "low-mid": 0.10, "mud": 0.20,
+      "mid": 0.10, "presence": 0.15, "harsh": 0.10, "air": 0.05
+    },
+    "deviation_curve": [[0, 100], [3, 100], [6, 80], [9, 50], [15, 0]]
+  },
+  "calibration": {
+    "frequency_profile": null,
+    "file_count": 0,
+    "calibrated_at": null
+  },
+  "frequency_reference": {
+    "base": 100,
     "delta_thresholds": [
       {"gt_db": 9, "penalty": 18},
       {"gt_db": 6, "penalty": 10},
@@ -58,60 +75,87 @@
     "issue_threshold_db": 3
   },
   "stereo": {
-    "sustained_neg_penalty": 35,
-    "sub_corr_hard": 0.7,
-    "sub_corr_hard_penalty": 25,
-    "sub_corr_soft": 0.85,
-    "sub_corr_soft_penalty": 12,
-    "mono_hard_db": -3.0,
-    "mono_hard_penalty": 20,
-    "mono_soft_db": -1.0,
-    "mono_soft_penalty": 8,
-    "width_max": 1.1,
-    "width_penalty": 10
+    "component_weights": {"sub": 0.30, "mono": 0.25, "lowmid": 0.20, "width": 0.15, "balance": 0.10},
+    "sub_corr_full": 0.90,
+    "sub_corr_zero": 0.70,
+    "lowmid_corr_full": 0.50,
+    "lowmid_corr_zero": 0.20,
+    "mono_full_db": -1.0,
+    "mono_zero_db": -3.0,
+    "width_full": 1.1,
+    "width_zero": 1.6,
+    "balance_full_db": 0.5,
+    "balance_zero_db": 3.0
   },
   "dynamics": {
-    "lra_severe": 2,
-    "lra_severe_penalty": 25,
-    "lra_over": 4,
-    "lra_over_penalty": 12,
-    "lra_loose": 14,
-    "lra_loose_penalty": 8,
-    "crest_hard": 6,
-    "crest_hard_penalty": 20,
-    "crest_soft": 9,
-    "crest_soft_penalty": 8,
-    "psr_min": 4,
-    "psr_penalty": 15
+    "component_weights": {"lra": 0.60, "psr": 0.25, "crest": 0.15},
+    "lra_full_lo": 4,
+    "lra_full_hi": 9,
+    "lra_below_slope": 15,
+    "lra_above_slope": 8,
+    "psr_full_db": 4,
+    "psr_slope_per_db": 25,
+    "crest_full_db": 9,
+    "crest_slope_per_db": 15
   },
   "artifacts": {
+    "component_weights": {"clicks": 0.70, "noise": 0.30},
     "click_penalty_per": 15,
-    "click_penalty_cap": 40,
-    "noise_hard_db": -40,
-    "noise_hard_penalty": 20,
-    "noise_soft_db": -50,
-    "noise_soft_penalty": 8,
-    "gap_penalty_per": 10,
-    "gap_penalty_cap": 20,
-    "zcr_spike_threshold": 5,
-    "zcr_spike_penalty": 10
+    "noise_full_db": -50,
+    "noise_mid_db": -40,
+    "noise_mid_score": 80,
+    "noise_high_score": 60
   },
-  "genre": {
-    "fallback_score": 70,
-    "tolerance_margin_db": 3,
-    "overshoot_hard": 6,
-    "overshoot_hard_penalty": 12,
-    "overshoot_soft_penalty": 5
+  "gates": {
+    "true_peak_hard_db": -1.0,
+    "mono_sum_loss_db": -3.0,
+    "sustained_neg_min_ms": 500,
+    "hard_start_amp": 0.02,
+    "hard_start_fade_min_ms": 5,
+    "hard_end_rms_db": -45.0,
+    "boundary_click_window_ms": 50,
+    "final_sample_rates": [44100, 48000]
   },
-  "fix_effort": {
-    "high_min_score": 50,
-    "high_overall": 60,
-    "low_min_score": 70,
-    "low_overall": 80
+  "effort": {
+    "low_max": 2,
+    "medium_max": 5,
+    "gate_costs": {
+      "confirmed_clipping": 1,
+      "true_peak_exceeded": 1,
+      "sustained_negative_correlation": 3,
+      "mono_sum_loss": 2,
+      "boundary_click": 2,
+      "hard_start": 1,
+      "hard_end": 1,
+      "lossy_container_final": 1,
+      "lossy_content_detected": 3,
+      "sample_rate_final": 1
+    },
+    "warning_costs": {
+      "lufs_off_target": 1,
+      "dc_offset": 1,
+      "format_lossy": 1,
+      "frequency_band_deviation": 2,
+      "stereo_sub_corr": 2,
+      "stereo_lowmid_corr": 2,
+      "stereo_mono_loss": 2,
+      "stereo_width": 1,
+      "stereo_balance": 1,
+      "dynamics_lra": 1,
+      "dynamics_psr": 1,
+      "dynamics_crest": 1,
+      "artifacts_clicks": 2,
+      "artifacts_noise": 2
+    }
   },
   "verdict": {
-    "ready_over": 80,
-    "needs_work_at_least": 60
+    "ready_overall_min": 85,
+    "ready_category_min": 70,
+    "minor_overall_min": 75,
+    "minor_overall_max": 84,
+    "needs_overall_min": 60,
+    "needs_overall_max": 74,
+    "significant_overall_max": 60
   },
   "status": {
     "pass_at_least": 80,

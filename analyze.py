@@ -52,6 +52,44 @@ BANDS_V2 = [
 ]
 
 
+def _lerp_score(x, x100, x0):
+    """Linear 0-100 score: `x100` maps to 100, `x0` maps to 0, clamped
+    outside that range. Works for both directions (x100 > x0 or x100 < x0)."""
+    if x100 == x0:
+        return 100.0 if x == x100 else 0.0
+    t = (x - x100) / (x0 - x100)
+    t = max(0.0, min(1.0, t))
+    return 100.0 * (1.0 - t)
+
+
+def _interp_curve(x, points):
+    """Piecewise-linear interpolation through sorted (x, y) points, clamped
+    to the first/last y value outside the covered x range."""
+    if x <= points[0][0]:
+        return float(points[0][1])
+    if x >= points[-1][0]:
+        return float(points[-1][1])
+    for (x0, y0), (x1, y1) in zip(points, points[1:]):
+        if x0 <= x <= x1:
+            t = (x - x0) / (x1 - x0) if x1 != x0 else 0.0
+            return float(y0 + t * (y1 - y0))
+    return float(points[-1][1])
+
+
+def _has_confirmed_clip_run(y, min_run, thresh):
+    """True if any sample position (any channel) sustains >=min_run
+    consecutive samples at abs(x) >= thresh."""
+    over = np.any(np.abs(y) >= thresh, axis=0).astype(np.int8)
+    if not over.any():
+        return False
+    diffs = np.diff(np.concatenate(([0], over, [0])))
+    starts = np.where(diffs == 1)[0]
+    ends = np.where(diffs == -1)[0]
+    if len(starts) == 0:
+        return False
+    return bool(np.max(ends - starts) >= min_run)
+
+
 def _gated_frames(gate_sig, n_fft, hop, gate_db):
     """Yield start indices of successive frames over `gate_sig`, skipping
     any frame whose RMS falls below `gate_db` dBFS (pass gate_db=None to
@@ -103,14 +141,24 @@ def measure_loudness(y, sr):
             except Exception:
                 pass
     st_max = max(st_vals) if st_vals else integrated
+    # True-peak oversampling factor per spec section 1: 4x for sr<=48kHz,
+    # 2x for sr>=88.2kHz. Sample rates strictly between those (rare) fall
+    # back to the safer 4x.
+    tcfg = RUBRIC["technical"]
+    if sr >= tcfg["tp_oversample_high_sr_min"]:
+        os_factor = tcfg["tp_oversample_high_factor"]
+    else:
+        os_factor = tcfg["tp_oversample_low_factor"]
     tp = 0.0
     for ch in range(y.shape[0]):
-        over = signal.resample_poly(y[ch], 4, 1)
+        over = signal.resample_poly(y[ch], os_factor, 1)
         tp = max(tp, float(np.max(np.abs(over))))
     tp_dbtp = 20.0 * np.log10(tp) if tp > 0 else -120.0
     clips = int(np.sum(np.any(np.abs(y) >= 0.9999, axis=0)))
+    confirmed_clip = _has_confirmed_clip_run(y, tcfg["clip_min_run"], tcfg["clip_confirmed_thresh"])
     dc = float(np.max(np.abs([np.mean(y[ch]) for ch in range(y.shape[0])])))
     return {"integrated": integrated, "short_term_max": float(st_max),
+            "confirmed_clip": confirmed_clip,
             "true_peak": float(tp_dbtp), "lra": lra, "clips": clips, "dc": dc}
 
 
@@ -259,6 +307,9 @@ def measure_artifacts(y, sr):
             if hi > lo and np.max(diff[lo:hi]) > outlier_thresh:
                 confirmed.add(int(np.argmax(diff[lo:hi]) + lo))
         clicks = len(confirmed)
+        click_positions = sorted(confirmed)
+    else:
+        click_positions = []
 
     # Noise floor: only meaningful when the track has genuinely quiet sections (>30dB below peak).
     # For continuously loud/compressed music the 5th-percentile RMS is quiet musical content, not noise.
@@ -294,7 +345,7 @@ def measure_artifacts(y, sr):
         else:
             run, in_gap = 0, False
 
-    return {"clicks": clicks, "noise_floor": noise_floor,
+    return {"clicks": clicks, "click_positions": click_positions, "noise_floor": noise_floor,
             "zcr_spikes": zcr_spikes, "silence_gaps": gaps}
 
 
@@ -487,56 +538,124 @@ def measure_texture(y, sr):
 
 # ── Scoring (each returns (0-100, [(priority, actionable_msg)]) ───────────────
 
-def score_technical(loud):
+def score_technical(loud, fmt, integrity, path, final=False):
+    """T = 0.40*TP + 0.25*CLIP + 0.15*LUFS + 0.10*DC + 0.10*FORMAT (spec section 1).
+    Issues are (priority, warning_code_or_None, message). A None code means
+    the condition is already accounted for by a hard gate (evaluate_gates())
+    with an identical trigger, so compute_effort() must not double-count it."""
     cfg = RUBRIC["technical"]
-    s, issues = 100, []
-    if loud["clips"] > 0:
-        s -= cfg["clip_penalty"]
-        issues.append((0, f"{loud['clips']} clipped sample(s) — reduce pre-limiter gain"))
-    if loud["true_peak"] > cfg["true_peak_hard_db"]:
-        s -= cfg["true_peak_hard_penalty"]
-        issues.append((1, f"True peak {loud['true_peak']:.1f} dBTP — hard limit to -1.0 dBTP before export"))
-    elif loud["true_peak"] > cfg["true_peak_soft_db"]:
-        s -= cfg["true_peak_soft_penalty"]
-        issues.append((6, f"True peak {loud['true_peak']:.1f} dBTP — tighten limiter ceiling to -1.5"))
+    w = cfg["component_weights"]
+    issues = []
+
+    tp_db = loud["true_peak"]
+    if tp_db <= cfg["tp_full_db"]:
+        tp_score = 100.0
+    else:
+        tp_score = max(0.0, min(100.0, 100.0 - cfg["tp_slope_per_db"] * (tp_db - cfg["tp_full_db"])))
+        # No code: identical trigger to the true_peak_exceeded gate.
+        issues.append((1, None, f"True peak {tp_db:.1f} dBTP — hard limit to {cfg['tp_full_db']:.1f} dBTP before export"))
+
+    if loud["confirmed_clip"]:
+        clip_score = 0.0
+        # No code: identical trigger to the confirmed_clipping gate.
+        issues.append((0, None, f"Confirmed clipping ({loud['clips']} sample(s) at full scale) — reduce pre-limiter gain"))
+    else:
+        clip_score = 100.0
+
     lufs = loud["integrated"]
     if np.isfinite(lufs):
-        if lufs > cfg["lufs_hot_db"]:
-            s -= cfg["lufs_hot_penalty"]
-            issues.append((2, f"Integrated {lufs:.1f} LUFS too hot — lower limiter threshold"))
-        elif lufs < cfg["lufs_quiet_db"]:
-            s -= cfg["lufs_quiet_penalty"]
-            issues.append((7, f"Integrated {lufs:.1f} LUFS too quiet — check gain staging"))
-        elif lufs > cfg["lufs_warn_hot_db"] or lufs < cfg["lufs_warn_quiet_db"]:
-            s -= cfg["lufs_warn_penalty"]
+        raw = 100.0 - cfg["lufs_slope_per_lu"] * abs(lufs - cfg["lufs_target"])
+        lufs_score = max(cfg["lufs_floor"], min(100.0, raw))
+        if lufs_score < 100.0:
+            issues.append((2, "lufs_off_target",
+                            f"Integrated {lufs:.1f} LUFS vs {cfg['lufs_target']} target — adjust gain staging"))
     else:
-        s -= cfg["lufs_missing_penalty"]
-    if loud["dc"] > cfg["dc_hard"]:
-        s -= cfg["dc_hard_penalty"]
-        issues.append((3, f"DC offset {loud['dc']:.4f} — apply DC filter before export"))
-    elif loud["dc"] > cfg["dc_soft"]:
-        s -= cfg["dc_soft_penalty"]
-    return max(0, min(100, s)), issues
+        lufs_score = float(cfg["lufs_floor"])
+        issues.append((2, "lufs_off_target", "Integrated loudness could not be measured"))
+
+    dc = loud["dc"]
+    if dc <= cfg["dc_full"]:
+        dc_score = 100.0
+    else:
+        slope = (cfg["dc_mid_score"] - 100.0) / (cfg["dc_mid"] - cfg["dc_full"])
+        dc_score = max(cfg["dc_floor"], 100.0 + slope * (dc - cfg["dc_full"]))
+        issues.append((3, "dc_offset", f"DC offset {dc:.4f} — apply DC filter before export"))
+
+    container = (fmt["container"] or "").upper()
+    hidden_lossy = bool(integrity.get("spectral_cliff_sustained"))
+    if hidden_lossy:
+        format_score = float(cfg["format_hidden_lossy_score"])
+        # No code when unconditional: identical trigger to the
+        # lossy_content_detected gate (fires regardless of --final).
+        issues.append((5, None, "Lossy encoding detected inside container "
+                                 "(spectral cliff above 16kHz) — re-export from an uncompressed master"))
+    elif container in ("WAV", "AIFF", "FLAC"):
+        format_score = float(cfg["format_lossless_score"])
+    else:
+        try:
+            size_bits = os.path.getsize(path) * 8
+            kbps = (size_bits / fmt["duration_s"] / 1000.0) if fmt["duration_s"] > 0 else 0.0
+        except OSError:
+            kbps = 0.0
+        if kbps >= cfg["format_mp3_bitrate_kbps"]:
+            format_score = float(cfg["format_mp3_high_score"])
+        else:
+            format_score = float(cfg["format_mp3_low_score"])
+        # No code when --final also gates this exact condition (lossy_container_final).
+        code = None if final else "format_lossy"
+        issues.append((5, code, f"Lossy container ({fmt['container']}, ~{kbps:.0f}kbps) — re-export from a lossless master"))
+
+    t_score = (w["tp"] * tp_score + w["clip"] * clip_score + w["lufs"] * lufs_score +
+               w["dc"] * dc_score + w["format"] * format_score)
+    return max(0.0, min(100.0, t_score)), issues
 
 
-def score_frequency(bands, ref_bands=None):
+def score_frequency(bands_v2):
+    """F = weighted per-band dB-deviation score vs the stored calibration
+    profile (spec section 2). Returns (score_or_None, issues); score is
+    None (PROVISIONAL) until calibrate.py populates
+    rubric['calibration']['frequency_profile']. --reference comparisons
+    are reported separately by score_reference_delta() and never feed
+    into this score (spec: "does not replace the rubric score or alter
+    ranking")."""
     cfg = RUBRIC["frequency"]
-    if ref_bands is None:
-        s, issues = cfg["no_reference_base"], []
-        sub, bass = bands.get("sub"), bands.get("bass")
-        if sub is not None and bass is not None:
-            if sub < bass - cfg["sub_vs_bass_gap_db"]:
-                s -= cfg["sub_vs_bass_penalty"]
-                issues.append((9, f"Sub very weak vs bass ({sub-bass:+.0f}dB) — check low-end content"))
-        hm = bands.get("high-mid")
-        if hm is not None and bass is not None and hm > bass - cfg["highmid_vs_bass_gap_db"]:
-            s -= cfg["highmid_vs_bass_penalty"]
-            issues.append((8, f"High-mid {hm-bass:+.0f}dB vs bass — may sound harsh/thin"))
-        return max(0, min(100, s)), issues
+    profile = RUBRIC["calibration"]["frequency_profile"]
+    if not profile:
+        return None, [(9, None, "Frequency: PROVISIONAL — no calibration profile yet (run calibrate.py)")]
 
-    s, issues, deltas = cfg["reference_base"], [], {}
+    w = cfg["component_weights"]
+    curve = cfg["deviation_curve"]
+    deltas, total = {}, 0.0
+    for name, weight in w.items():
+        measured, target = bands_v2.get(name), profile.get(name)
+        if measured is None or not target:
+            band_score = 100.0  # nothing to compare; don't penalize for missing data
+        else:
+            dev_db = float(10 * np.log10(max(measured, 1e-9) / max(target, 1e-9)))
+            deltas[name] = dev_db
+            band_score = _interp_curve(abs(dev_db), curve)
+        total += weight * band_score
+
+    issues = []
+    hz_hint = {"sub": "20-60Hz", "bass": "60-120Hz", "low-mid": "120-250Hz", "mud": "250-500Hz",
+               "mid": "500Hz-2kHz", "presence": "2-5kHz", "harsh": "5-8kHz", "air": "8-16kHz"}
+    for name, d in sorted(deltas.items(), key=lambda x: abs(x[1]), reverse=True)[:2]:
+        if abs(d) > 3:
+            action = "cut" if d > 0 else "boost"
+            issues.append((4, "frequency_band_deviation",
+                            f"{name} {d:+.1f}dB vs calibration — {action} {hz_hint.get(name, name)}"))
+
+    return max(0.0, min(100.0, total)), issues
+
+
+def score_reference_delta(bands_v1, ref_bands_v1):
+    """Informational only (spec section 2): v1-style per-band dB delta vs
+    a user-supplied --reference track. Reported separately; never feeds
+    score_frequency(), OVERALL, or ranking."""
+    cfg = RUBRIC["frequency_reference"]
+    s, issues, deltas = cfg["base"], [], {}
     for name, *_ in BANDS:
-        t, r = bands.get(name), ref_bands.get(name)
+        t, r = bands_v1.get(name), ref_bands_v1.get(name)
         if t is None or r is None:
             continue
         d = t - r
@@ -553,85 +672,130 @@ def score_frequency(bands, ref_bands=None):
         if abs(d) > cfg["issue_threshold_db"]:
             action = "cut" if d > 0 else "boost"
             issues.append((4, f"{name} {d:+.1f}dB vs reference — {action} {hz_hint.get(name, name)}"))
-    return max(0, min(100, s)), issues
+    return max(0, min(100, s)), deltas, issues
 
 
-def score_stereo(stereo, phase):
+def score_stereo(stereo, balance):
+    """S = 0.30*SUB + 0.25*MONO + 0.20*LOWMID + 0.15*WIDTH + 0.10*BALANCE
+    (spec section 3). Sustained negative correlation is a hard gate only
+    (evaluate_gates()), not part of this formula."""
     cfg = RUBRIC["stereo"]
-    s, issues = 100, []
-    if phase["sustained_neg"]:
-        s -= cfg["sustained_neg_penalty"]
-        worst = min(stereo["band_corr"], key=stereo["band_corr"].get)
-        issues.append((1, f"Phase correlation negative (min {phase['min']:.2f}) "
-                          f"— check stereo widener, worst in {worst}"))
-    sub_c = stereo["band_corr"].get("sub", 1.0)
-    if sub_c < cfg["sub_corr_hard"]:
-        s -= cfg["sub_corr_hard_penalty"]
-        issues.append((2, f"Sub L/R correlation {sub_c:.2f} — collapse sub below 80Hz to mono"))
-    elif sub_c < cfg["sub_corr_soft"]:
-        s -= cfg["sub_corr_soft_penalty"]
-        issues.append((6, f"Sub L/R correlation {sub_c:.2f} — consider mono filter at 80Hz"))
-    if stereo["mono_db"] < cfg["mono_hard_db"]:
-        s -= cfg["mono_hard_penalty"]
-        issues.append((3, f"Mono compat {stereo['mono_db']:.1f}dB loss — anti-phase content present"))
-    elif stereo["mono_db"] < cfg["mono_soft_db"]:
-        s -= cfg["mono_soft_penalty"]
-        issues.append((7, f"Mono compat {stereo['mono_db']:.1f}dB loss — verify mono playback"))
-    if stereo["width"] > cfg["width_max"]:
-        s -= cfg["width_penalty"]
-        issues.append((8, f"Stereo width {stereo['width']:.2f} M/S ratio — may fold oddly on some systems"))
-    return max(0, min(100, s)), issues
+    w = cfg["component_weights"]
+    v2 = stereo["band_corr_v2"]
+    issues = []
+
+    sub_c = v2["sub"]
+    sub_score = _lerp_score(sub_c, cfg["sub_corr_full"], cfg["sub_corr_zero"])
+    if sub_score < 100.0:
+        issues.append((2, "stereo_sub_corr", f"Sub correlation (20-120Hz) {sub_c:.2f} — collapse sub to mono"))
+
+    lm_c, mid_c = v2["low-mid"], v2["mid"]
+    lm_score = _lerp_score(lm_c, cfg["lowmid_corr_full"], cfg["lowmid_corr_zero"])
+    mid_score = _lerp_score(mid_c, cfg["lowmid_corr_full"], cfg["lowmid_corr_zero"])
+    lowmid_score = (lm_score + mid_score) / 2.0
+    if lowmid_score < 100.0:
+        issues.append((6, "stereo_lowmid_corr",
+                        f"Low-mid/mid correlation {lm_c:.2f}/{mid_c:.2f} — narrow width in that range"))
+
+    mono_db = stereo["mono_db"]
+    mono_score = _lerp_score(mono_db, cfg["mono_full_db"], cfg["mono_zero_db"])
+    if mono_score < 100.0:
+        # No code once the mono_sum_loss gate also fires (same trigger).
+        code = "stereo_mono_loss" if mono_db > cfg["mono_zero_db"] else None
+        issues.append((3, code, f"Mono compat {mono_db:.1f}dB loss — check phase alignment"))
+
+    width = stereo["width"]
+    width_score = _lerp_score(width, cfg["width_full"], cfg["width_zero"])
+    if width_score < 100.0:
+        issues.append((8, "stereo_width", f"Stereo width {width:.2f} M/S ratio — ease off the widener"))
+
+    imbalance = abs(balance["lr_imbalance_db"])
+    balance_score = _lerp_score(imbalance, cfg["balance_full_db"], cfg["balance_zero_db"])
+    if balance_score < 100.0:
+        issues.append((7, "stereo_balance", f"L/R imbalance {imbalance:.2f}dB — check pan/gain balance"))
+
+    s_score = (w["sub"] * sub_score + w["mono"] * mono_score + w["lowmid"] * lowmid_score +
+               w["width"] * width_score + w["balance"] * balance_score)
+    return max(0.0, min(100.0, s_score)), issues
 
 
 def score_dynamics(dyn, loud):
+    """D = 0.60*LRA + 0.25*PSR + 0.15*CREST (spec section 4). LRA is
+    asymmetric: under-range is penalized harder than over-range, since
+    over-compression is harder to fix and more common in this genre."""
     cfg = RUBRIC["dynamics"]
-    s, issues = 100, []
+    w = cfg["component_weights"]
+    issues = []
+
     lra = loud["lra"]
     if np.isfinite(lra):
-        if lra < cfg["lra_severe"]:
-            s -= cfg["lra_severe_penalty"]
-            issues.append((3, f"LRA {lra:.1f} LU — severely over-compressed, ease limiter by 4+ dB"))
-        elif lra < cfg["lra_over"]:
-            s -= cfg["lra_over_penalty"]
-            issues.append((5, f"LRA {lra:.1f} LU — over-compressed, ease limiter threshold"))
-        elif lra > cfg["lra_loose"]:
-            s -= cfg["lra_loose_penalty"]
-            issues.append((7, f"LRA {lra:.1f} LU — very dynamic, may need limiting for streaming"))
-    if dyn["crest"] < cfg["crest_hard"]:
-        s -= cfg["crest_hard_penalty"]
-        issues.append((4, f"Crest factor {dyn['crest']:.1f}dB — heavily limited, check limiter settings"))
-    elif dyn["crest"] < cfg["crest_soft"]:
-        s -= cfg["crest_soft_penalty"]
-    if dyn["psr"] < cfg["psr_min"]:
-        s -= cfg["psr_penalty"]
-        issues.append((6, f"PSR {dyn['psr']:.1f}dB — over-limited, increase peak-to-loudness margin"))
-    return max(0, min(100, s)), issues
+        lo, hi = cfg["lra_full_lo"], cfg["lra_full_hi"]
+        if lo <= lra <= hi:
+            lra_score = 100.0
+        elif lra < lo:
+            lra_score = max(0.0, 100.0 - cfg["lra_below_slope"] * (lo - lra))
+            issues.append((3, "dynamics_lra", f"LRA {lra:.1f} LU — over-compressed, ease limiter threshold"))
+        else:
+            lra_score = max(0.0, 100.0 - cfg["lra_above_slope"] * (lra - hi))
+            issues.append((7, "dynamics_lra", f"LRA {lra:.1f} LU — very dynamic, may need limiting for streaming"))
+    else:
+        lra_score = 0.0
+        issues.append((3, "dynamics_lra", "LRA could not be measured"))
+
+    psr = dyn["psr"]
+    if psr >= cfg["psr_full_db"]:
+        psr_score = 100.0
+    else:
+        psr_score = max(0.0, 100.0 - cfg["psr_slope_per_db"] * (cfg["psr_full_db"] - psr))
+        issues.append((6, "dynamics_psr", f"PSR {psr:.1f}dB — over-limited, increase peak-to-loudness margin"))
+
+    crest = dyn["crest"]
+    if crest >= cfg["crest_full_db"]:
+        crest_score = 100.0
+    else:
+        crest_score = max(0.0, 100.0 - cfg["crest_slope_per_db"] * (cfg["crest_full_db"] - crest))
+        issues.append((4, "dynamics_crest", f"Crest factor {crest:.1f}dB — heavily limited, check limiter settings"))
+
+    d_score = w["lra"] * lra_score + w["psr"] * psr_score + w["crest"] * crest_score
+    return max(0.0, min(100.0, d_score)), issues
 
 
 def score_artifacts(arts):
+    """A = 0.70*CLICKS + 0.30*NOISE (spec section 5); renormalizes to
+    A = CLICKS when noise floor is unmeasurable. Start/end boundaries and
+    silence gaps are reported as data only (measure_boundaries()/arts) —
+    they moved to hard gates and are never scored here."""
     cfg = RUBRIC["artifacts"]
-    s, issues = 100, []
-    if arts["clicks"] > 0:
-        s -= min(cfg["click_penalty_cap"], arts["clicks"] * cfg["click_penalty_per"])
-        issues.append((2, f"{arts['clicks']} click(s) detected — check edit points and clip limiting"))
+    w = cfg["component_weights"]
+    issues = []
+
+    clicks = arts["clicks"]
+    clicks_score = max(0.0, 100.0 - cfg["click_penalty_per"] * clicks)
+    if clicks > 0:
+        issues.append((2, "artifacts_clicks", f"{clicks} click(s) detected — check edit points and clip limiting"))
+
     nf = arts["noise_floor"]
-    if nf is not None:
-        if nf > cfg["noise_hard_db"]:
-            s -= cfg["noise_hard_penalty"]
-            issues.append((4, f"Noise floor {nf:.0f}dB — check source recordings for hum/hiss"))
-        elif nf > cfg["noise_soft_db"]:
-            s -= cfg["noise_soft_penalty"]
-            issues.append((8, f"Noise floor {nf:.0f}dB — mild background noise"))
-    if arts["silence_gaps"] > 0:
-        s -= min(cfg["gap_penalty_cap"], arts["silence_gaps"] * cfg["gap_penalty_per"])
-        issues.append((5, f"{arts['silence_gaps']} internal silence gap(s) — dead spots in arrangement"))
-    if arts["zcr_spikes"] > cfg["zcr_spike_threshold"]:
-        s -= cfg["zcr_spike_penalty"]
-        issues.append((7, f"{arts['zcr_spikes']} zero-crossing anomalies — possible edit glitches"))
-    return max(0, min(100, s)), issues
+    if nf is None:
+        a_score = clicks_score
+    else:
+        if nf <= cfg["noise_full_db"]:
+            noise_score = 100.0
+        elif nf <= cfg["noise_mid_db"]:
+            noise_score = float(cfg["noise_mid_score"])
+            issues.append((8, "artifacts_noise", f"Noise floor {nf:.0f}dB — mild background noise"))
+        else:
+            noise_score = float(cfg["noise_high_score"])
+            issues.append((4, "artifacts_noise", f"Noise floor {nf:.0f}dB — check source recordings for hum/hiss"))
+        a_score = w["clicks"] * clicks_score + w["noise"] * noise_score
+
+    return max(0.0, min(100.0, a_score)), issues
 
 
 def score_genre(bands):
+    """Descriptive genre fit vs the darksynth/industrial profile (spec
+    section 9 scopes a fuller HPSS-based qualitative report; this keeps
+    the existing v1-band-delta scoring as that numeric descriptive proxy).
+    Never included in OVERALL — reported separately (see analyze())."""
     cfg = RUBRIC["genre"]
     bass_val = bands.get("bass")
     if bass_val is None:
@@ -656,20 +820,30 @@ def score_genre(bands):
         _, worst_name, actual_delta, target = max(deviations, key=lambda x: x[0])
         diff = actual_delta - target
         tag = "too prominent" if diff > 0 else "too weak"
-        issues.append((9, f"{worst_name} {tag} for darksynth profile "
-                          f"({actual_delta:+.0f}dB vs bass, target {target:+.0f}dB)"))
+        issues.append((9, None, f"{worst_name} {tag} for darksynth profile "
+                                 f"({actual_delta:+.0f}dB vs bass, target {target:+.0f}dB)"))
     return max(0, min(100, s)), issues
 
 
 # ── Aggregation ───────────────────────────────────────────────────────────────
 
 def weighted_overall(scores):
+    """OVERALL = 0.25*T + 0.24*F + 0.23*S + 0.18*D + 0.10*A (spec intro).
+    Genre is never included (weight 0, excluded from WEIGHTS entirely).
+    When frequency is None (uncalibrated, PROVISIONAL), its 0.24 weight is
+    redistributed proportionally across the other scored categories."""
+    freq = scores.get("frequency")
+    if freq is None:
+        remaining = {k: v for k, v in WEIGHTS.items() if k != "frequency"}
+        total_w = sum(remaining.values())
+        return sum(scores[k] * w for k, w in remaining.items()) / total_w
     return sum(scores[k] * WEIGHTS[k] for k in WEIGHTS)
 
 
 def top_blockers(all_issues, n=3):
     seen, out = set(), []
-    for _, msg in sorted(all_issues):
+    for item in sorted(all_issues, key=lambda x: (x[0], x[2])):
+        msg = item[2]
         if msg not in seen:
             out.append(msg)
             seen.add(msg)
@@ -678,24 +852,92 @@ def top_blockers(all_issues, n=3):
     return out
 
 
-def fix_effort(scores, ov):
-    cfg = RUBRIC["fix_effort"]
-    if min(scores.values()) < cfg["high_min_score"] or ov < cfg["high_overall"]:
-        return "High"
-    if min(scores.values()) >= cfg["low_min_score"] and ov >= cfg["low_overall"]:
-        return "Low"
-    return "Medium"
-
-
-def verdict(ov):
+def verdict(ov, category_scores, gates):
+    """Spec section 7. Gates can override the verdict regardless of OVERALL,
+    so severity is checked most-severe-first. 'Easy'/'reconstruction-level'
+    gates are derived from the same effort cost table (cost 1 / cost 3)
+    rather than a separate hardcoded list, so there's one source of truth."""
     cfg = RUBRIC["verdict"]
-    return ("Ready for release" if ov > cfg["ready_over"]
-            else ("Needs work" if ov >= cfg["needs_work_at_least"] else "Significant issues"))
+    gate_costs = RUBRIC["effort"]["gate_costs"]
+    easy_gates = {g for g, c in gate_costs.items() if c == 1}
+    reconstruction_gates = {g for g, c in gate_costs.items() if c == 3}
+    n_gates = len(gates)
+    scored = {k: v for k, v in category_scores.items() if k in WEIGHTS and v is not None}
+
+    if ov < cfg["significant_overall_max"] or n_gates >= 2 or any(g in reconstruction_gates for g in gates):
+        return "Significant work"
+    if ov >= cfg["ready_overall_min"] and all(v >= cfg["ready_category_min"] for v in scored.values()) and n_gates == 0:
+        return "Ready"
+    if n_gates == 1 and gates[0] in easy_gates:
+        return "Minor work"
+    if cfg["minor_overall_min"] <= ov <= cfg["minor_overall_max"]:
+        return "Minor work"
+    if cfg["needs_overall_min"] <= ov <= cfg["needs_overall_max"]:
+        return "Needs work"
+    return "Needs work"
 
 
 def status_of(s):
+    if s is None:
+        return "N/A"
     cfg = RUBRIC["status"]
     return "PASS" if s >= cfg["pass_at_least"] else ("WARNING" if s >= cfg["warning_at_least"] else "FAIL")
+
+
+def evaluate_gates(loud, phase, stereo, boundaries, integrity, fmt, arts, sr, n_samples, final=False):
+    """Binary pass/fail hard gates, evaluated separately from the numeric
+    score (spec section 6). Returns a list of triggered gate names — any
+    non-empty list can override the verdict regardless of OVERALL."""
+    cfg = RUBRIC["gates"]
+    gates = []
+
+    if loud["confirmed_clip"]:
+        gates.append("confirmed_clipping")
+    if loud["true_peak"] > cfg["true_peak_hard_db"]:
+        gates.append("true_peak_exceeded")
+    if phase["sustained_neg"]:
+        gates.append("sustained_negative_correlation")
+    if stereo["mono_db"] < cfg["mono_sum_loss_db"]:
+        gates.append("mono_sum_loss")
+
+    window = int(cfg["boundary_click_window_ms"] / 1000.0 * sr)
+    if any(p < window or p > n_samples - window for p in arts["click_positions"]):
+        gates.append("boundary_click")
+
+    if (boundaries["first_sample_amplitude"] > cfg["hard_start_amp"]
+            and not boundaries["fade_in_present"]):
+        gates.append("hard_start")
+    if (boundaries["final_50ms_rms_db"] > cfg["hard_end_rms_db"]
+            and boundaries["final_fade_slope_db_per_frame"] >= 0):
+        gates.append("hard_end")
+
+    lossless = {"WAV", "AIFF", "FLAC"}
+    if final and (fmt["container"] or "").upper() not in lossless:
+        gates.append("lossy_container_final")
+    if integrity.get("spectral_cliff_sustained"):
+        gates.append("lossy_content_detected")
+    if final and fmt["sample_rate"] not in cfg["final_sample_rates"]:
+        gates.append("sample_rate_final")
+
+    return gates
+
+
+def compute_effort(gates, warning_codes):
+    """effort_points as a pure table lookup from triggered gate names and
+    non-gate warning codes (spec section 8) — no heuristics, no score
+    thresholds. Codes not in either table (or None, meaning "already
+    covered by a gate") contribute zero, by design."""
+    cfg = RUBRIC["effort"]
+    gate_costs, warning_costs = cfg["gate_costs"], cfg["warning_costs"]
+    points = sum(gate_costs.get(g, 0) for g in gates)
+    points += sum(warning_costs.get(c, 0) for c in warning_codes if c)
+    if points <= cfg["low_max"]:
+        bucket = "Low"
+    elif points <= cfg["medium_max"]:
+        bucket = "Medium"
+    else:
+        bucket = "High"
+    return points, bucket
 
 
 # ── Output ────────────────────────────────────────────────────────────────────
@@ -715,7 +957,7 @@ _SHORT = {"sub": "sub", "bass": "bass", "low-mid": "lo-mid",
 _BNAMES = [b[0] for b in BANDS]
 
 
-def print_measured_data(raw, ref_bands=None):
+def print_measured_data(raw, reference_delta=None):
     loud   = raw["loudness"]
     bands  = raw["bands"]
     stereo = raw["stereo"]
@@ -738,11 +980,13 @@ def print_measured_data(raw, ref_bands=None):
     def _corr(n):
         return f"{stereo['band_corr'].get(n, 1.0):.2f}"
     print(f"  Freq (dB)   {band_row(_energy)}")
-    if ref_bands:
+    if reference_delta:
+        deltas = reference_delta["deltas"]
         def _delta(n):
-            t, r = bands.get(n), ref_bands.get(n)
-            return f"{t-r:+.1f}" if t is not None and r is not None else "n/a"
-        print(f"  vs ref      {band_row(_delta)}")
+            d = deltas.get(n)
+            return f"{d:+.1f}" if d is not None else "n/a"
+        print(f"  vs ref      {band_row(_delta)}   (informational only — score {reference_delta['score']:.0f}, "
+              f"not part of OVERALL)")
     else:
         print( "  vs ref      no reference")
     print(f"  Stereo      width {stereo['width']:.2f}   mono {stereo['mono_db']:+.1f} dB")
@@ -793,42 +1037,57 @@ def print_measured_data(raw, ref_bands=None):
               f"mid(500-1k) {cv2['mid']:.2f}")
 
 
-def print_track_report(scores, ov, blockers, effort, raw, ref_bands=None, rubric_version=None):
-    rv = f"   [rubric {rubric_version}]" if rubric_version else ""
-    print(f"VERDICT: {verdict(ov)} — {ov:.0f}%{rv}")
+def print_track_report(r):
+    rv = f"   [rubric {r['rubric_version']}]" if r.get("rubric_version") else ""
+    print(f"VERDICT: {r['verdict']} — {r['overall']:.0f}%{rv}")
     print()
     print(f"{'Category':<20} | {'Score':>5} | Status")
     print(f"{'-'*20}-+-{'-'*5}-+-{'-'*7}")
     for label, key in CATS:
-        sc = scores[key]
-        print(f"{label:<20} | {sc:>5.0f} | {status_of(sc)}")
+        sc = r["scores"][key]
+        sc_str = f"{sc:.0f}" if sc is not None else "N/A"
+        print(f"{label:<20} | {sc_str:>5} | {status_of(sc)}")
     print()
-    print_measured_data(raw, ref_bands)
+    print_measured_data(r["raw"], r.get("reference_delta"))
     print()
     print("TOP BLOCKERS")
-    if blockers:
-        for b in blockers:
+    if r["blockers"]:
+        for b in r["blockers"]:
             print(f"  {b}")
     else:
         print("  None")
     print()
-    print(f"FIX EFFORT: {effort}")
+    print("HARD GATES")
+    if r["gates"]:
+        for g in r["gates"]:
+            print(f"  {g}")
+    else:
+        print("  None")
+    print()
+    if r.get("genre_issues"):
+        print("GENRE FIT (descriptive only, not in OVERALL)")
+        for msg in r["genre_issues"]:
+            print(f"  {msg}")
+        print()
+    print(f"FIX EFFORT: {r['effort']} ({r['effort_points']} point(s))")
 
 
 def print_ranking(results):
-    cols = (28, 6, 20, 40, 6)
+    cols = (28, 6, 20, 40, 8)
     header = f"{'Track':<{cols[0]}} | {'Score':>{cols[1]}} | {'Verdict':<{cols[2]}} | {'Main blocker':<{cols[3]}} | Effort"
     sep = "-+-".join("-" * c for c in cols)
     print("RANKING")
     print(header)
     print(sep)
-    for r in sorted(results, key=lambda x: x["overall"], reverse=True):
+    # Ranking key: (effort_points ascending, OVERALL descending) — spec section 8.
+    for r in sorted(results, key=lambda x: (x["effort_points"], -x["overall"])):
         name = os.path.splitext(os.path.basename(r["file"]))[0]
         name = name[:cols[0]-1] if len(name) >= cols[0] else name
         blocker = (r["blockers"][0][:cols[3]-1] if r["blockers"] else "—")
-        verd = verdict(r["overall"])[:cols[2]-1]
+        verd = r["verdict"][:cols[2]-1]
+        effort_str = f"{r['effort']} ({r['effort_points']})"
         print(f"{name:<{cols[0]}} | {r['overall']:>{cols[1]-1}.0f}% | "
-              f"{verd:<{cols[2]}} | {blocker:<{cols[3]}} | {r['effort']}")
+              f"{verd:<{cols[2]}} | {blocker:<{cols[3]}} | {effort_str}")
     print()
 
 
@@ -902,10 +1161,10 @@ def resolve_inputs(entries, recursive=False, extensions=None):
 
 # ── Core ──────────────────────────────────────────────────────────────────────
 
-def analyze(path, ref_bands=None):
+def analyze(path, ref_bands=None, final=False):
     y, sr = load_audio(path)
     loud = measure_loudness(y, sr)
-    bands = measure_bands_v1(y, sr)
+    bands_v1 = measure_bands_v1(y, sr)
     bands_v2 = measure_bands(y, sr)
     stereo = measure_stereo(y, sr)
     phase = measure_phase(y, sr)
@@ -917,22 +1176,39 @@ def analyze(path, ref_bands=None):
     integrity = measure_integrity(y, sr, path)
     texture = measure_texture(y, sr)
 
-    t_s, t_i = score_technical(loud)
-    f_s, f_i = score_frequency(bands, ref_bands)
-    st_s, st_i = score_stereo(stereo, phase)
+    t_s, t_i = score_technical(loud, fmt, integrity, path, final=final)
+    f_s, f_i = score_frequency(bands_v2)
+    st_s, st_i = score_stereo(stereo, balance)
     d_s, d_i = score_dynamics(dyn, loud)
     a_s, a_i = score_artifacts(arts)
-    g_s, g_i = score_genre(bands)
+    g_s, g_i = score_genre(bands_v1)
 
     scores = {"technical": t_s, "frequency": f_s, "stereo": st_s,
               "dynamics": d_s, "artifacts": a_s, "genre": g_s}
     ov = weighted_overall(scores)
-    blockers = top_blockers(t_i + st_i + d_i + f_i + a_i + g_i)
-    effort = fix_effort(scores, ov)
 
-    return {"file": path, "scores": scores, "overall": ov,
-            "blockers": blockers, "effort": effort, "rubric_version": RUBRIC["version"],
-            "raw": {"loudness": loud, "bands": bands, "stereo": stereo,
+    n_samples = y.shape[1]
+    gates = evaluate_gates(loud, phase, stereo, boundaries, integrity, fmt, arts, sr, n_samples, final=final)
+
+    all_issues = t_i + f_i + st_i + d_i + a_i
+    blockers = top_blockers(all_issues)
+    warning_codes = [code for _, code, _ in all_issues]
+    effort_points, effort_bucket = compute_effort(gates, warning_codes)
+    v = verdict(ov, scores, gates)
+
+    reference_delta = None
+    if ref_bands is not None:
+        rd_score, rd_deltas, rd_issues = score_reference_delta(bands_v1, ref_bands)
+        reference_delta = {"score": rd_score, "deltas": rd_deltas,
+                            "issues": [msg for _, msg in rd_issues]}
+
+    return {"file": path, "scores": scores, "overall": ov, "verdict": v,
+            "blockers": blockers, "gates": gates,
+            "effort_points": effort_points, "effort": effort_bucket,
+            "rubric_version": RUBRIC["version"],
+            "genre_issues": [msg for _, _, msg in g_i],
+            "reference_delta": reference_delta,
+            "raw": {"loudness": loud, "bands": bands_v1, "stereo": stereo,
                     "phase": phase, "dynamics": dyn, "artifacts": arts,
                     "bands_v2": bands_v2, "format": fmt, "boundaries": boundaries,
                     "balance": balance, "integrity": integrity, "texture": texture}}
@@ -971,6 +1247,9 @@ def main():
                              f"(default: {','.join(sorted(DEFAULT_EXTENSIONS))})")
     parser.add_argument("--rubric", metavar="JSON", default=DEFAULT_RUBRIC_PATH,
                         help=f"Rubric config to score against (default: {DEFAULT_RUBRIC_PATH})")
+    parser.add_argument("--final", action="store_true",
+                        help="Also enforce release-format gates: lossless container, "
+                             "44.1/48kHz sample rate")
     args = parser.parse_args()
 
     try:
@@ -999,7 +1278,7 @@ def main():
     results = []
     for path in paths:
         try:
-            results.append(analyze(path, ref_bands))
+            results.append(analyze(path, ref_bands, final=args.final))
         except FileNotFoundError:
             print(f"Error: not found: {path}", file=sys.stderr)
         except Exception as e:
@@ -1020,13 +1299,10 @@ def main():
             print(f"{'=' * 60}")
             print(name)
             print(f"{'=' * 60}")
-            print_track_report(r["scores"], r["overall"], r["blockers"], r["effort"],
-                               r["raw"], ref_bands, r["rubric_version"])
+            print_track_report(r)
             print()
     else:
-        r = results[0]
-        print_track_report(r["scores"], r["overall"], r["blockers"], r["effort"],
-                           r["raw"], ref_bands, r["rubric_version"])
+        print_track_report(results[0])
 
 
 if __name__ == "__main__":

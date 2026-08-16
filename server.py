@@ -10,16 +10,16 @@ from analyze import analyze, load_audio, measure_bands_v1, _clean, resolve_input
 mcp = FastMCP(
     "track-analyzer",
     instructions=(
-        "Analyzes WAV files for mix/mastering release readiness. "
-        "Scores technical safety, frequency balance, stereo/phase, dynamics, "
-        "artifacts, and genre fit (darksynth/industrial). "
-        "Returns numeric scores, measured data, and actionable fix recommendations."
+        "Analyzes WAV files for mix/mastering release readiness against the "
+        "LT_DARKSYNTH_V2 rubric. Scores technical safety, frequency balance, "
+        "stereo/phase, dynamics, and artifacts (weighted into OVERALL); genre "
+        "fit is reported separately and never affects OVERALL. Also reports "
+        "hard gates (binary pass/fail conditions that can override the verdict "
+        "regardless of OVERALL) and effort_points (a table-driven estimate of "
+        "fix cost). Returns numeric scores, measured data, hard gates, and "
+        "actionable fix recommendations."
     ),
 )
-
-
-def _verdict(ov: float) -> str:
-    return "Ready for release" if ov > 80 else ("Needs work" if ov >= 60 else "Significant issues")
 
 
 @mcp.tool()
@@ -28,20 +28,25 @@ def analyze_tracks(
     reference: str | None = None,
     recursive: bool = False,
     extensions: list[str] | None = None,
+    final: bool = False,
 ) -> dict:
     """
-    Analyze WAV files for release readiness.
+    Analyze WAV files for release readiness against the v2 rubric.
 
     Args:
         paths: One or more paths — each may be an absolute file path, a
             directory (non-recursive by default), or a glob pattern.
         reference: Optional reference WAV path for frequency comparison.
+            Reported separately (reference_delta) — never affects the
+            frequency score, OVERALL, or ranking.
         recursive: When a path is a directory, also scan its subfolders.
             Also enables recursive "**" expansion in glob patterns.
         extensions: Extensions to match when a path is a directory, e.g.
             [".wav", ".flac"]. Defaults to .wav/.aiff/.aif/.flac. Files
             matched directly by a glob pattern are used as-is regardless
             of this filter.
+        final: Also enforce release-format gates: lossless container,
+            44.1/48kHz sample rate.
     """
     ref_bands = None
     if reference:
@@ -59,8 +64,7 @@ def analyze_tracks(
     results, errors = [], list(warnings)
     for path in resolved:
         try:
-            r = analyze(path, ref_bands)
-            r["verdict"] = _verdict(r["overall"])
+            r = analyze(path, ref_bands, final=final)
             results.append(_clean(r))
         except Exception as e:
             errors.append(f"Error analyzing {os.path.basename(path)}: {e}")
@@ -73,6 +77,7 @@ def analyze_tracks(
     else:
         out = {
             "tracks": results,
+            # Ranking key: (effort_points ascending, OVERALL descending) — spec section 8.
             "summary": sorted(
                 [
                     {
@@ -80,12 +85,14 @@ def analyze_tracks(
                         "overall": r["overall"],
                         "verdict": r["verdict"],
                         "effort": r["effort"],
+                        "effort_points": r["effort_points"],
+                        "gates": r["gates"],
+                        "rubric_version": r["rubric_version"],
                         "top_blocker": r["blockers"][0] if r["blockers"] else None,
                     }
                     for r in results
                 ],
-                key=lambda x: x["overall"],
-                reverse=True,
+                key=lambda x: (x["effort_points"], -x["overall"]),
             ),
         }
 
