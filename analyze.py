@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Track Analyzer — release readiness for darksynth/industrial."""
 
-import argparse, glob, json, os, sys
+import argparse, glob, json, os, re, sys
 import numpy as np
 import librosa
 import pyloudnorm as pyln
+import soundfile as sf
 from scipy import signal
 
 DEFAULT_EXTENSIONS = {".wav", ".aiff", ".aif", ".flac"}
@@ -35,6 +36,36 @@ def apply_rubric(data):
 
 
 apply_rubric(load_rubric())
+
+# v2 spec's eight-band layout (rubric-v2-spec.md section 2). Kept as a plain
+# constant rather than rubric-driven since only measurement code uses it so
+# far — no v2 scoring function exists yet to own it.
+BANDS_V2 = [
+    ("sub",       20,    60),
+    ("bass",      60,   120),
+    ("low-mid",  120,   250),
+    ("mud",      250,   500),
+    ("mid",      500,  2000),
+    ("presence", 2000, 5000),
+    ("harsh",    5000, 8000),
+    ("air",      8000, 16000),
+]
+
+
+def _gated_frames(gate_sig, n_fft, hop, gate_db):
+    """Yield start indices of successive frames over `gate_sig`, skipping
+    any frame whose RMS falls below `gate_db` dBFS (pass gate_db=None to
+    disable gating)."""
+    n = len(gate_sig)
+    for start in range(0, n - n_fft + 1, hop):
+        if gate_db is None:
+            yield start
+            continue
+        g = gate_sig[start:start + n_fft]
+        rms = float(np.sqrt(np.mean(g ** 2)))
+        dbfs = 20 * np.log10(rms) if rms > 0 else -np.inf
+        if dbfs >= gate_db:
+            yield start
 
 
 # ── Audio ─────────────────────────────────────────────────────────────────────
@@ -83,7 +114,9 @@ def measure_loudness(y, sr):
             "true_peak": float(tp_dbtp), "lra": lra, "clips": clips, "dc": dc}
 
 
-def measure_bands(y, sr):
+def measure_bands_v1(y, sr):
+    """v1: 6-band mean dB energy (BANDS, from the rubric). Still used by
+    v1 scoring (score_frequency, score_genre) — do not change."""
     y_mono = np.mean(y, axis=0)
     n_fft = 4096
     S = np.abs(librosa.stft(y_mono, n_fft=n_fft, hop_length=1024))
@@ -98,6 +131,34 @@ def measure_bands(y, sr):
         rms = float(np.sqrt(np.mean(power[mask, :])))
         out[name] = float(20 * np.log10(rms)) if rms > 0 else None
     return out
+
+
+def measure_bands(y, sr):
+    """v2 spec (section 2): 8192-sample Hann STFT, 50% overlap, frames
+    below -60 dBFS excluded, L/R power averaged per frame, each of the
+    eight BANDS_V2 reported as a percentage of total 20 Hz-16 kHz power.
+    Informational only for now — no v2 scoring function consumes this yet."""
+    n_fft, hop, gate_db = 8192, 4096, -60.0
+    n = y.shape[1]
+    if n < n_fft:
+        return {name: None for name, *_ in BANDS_V2}
+    window = np.hanning(n_fft)
+    freqs = np.fft.rfftfreq(n_fft, d=1.0 / sr)
+    band_masks = [(name, (freqs >= lo) & (freqs < hi)) for name, lo, hi in BANDS_V2]
+    total_mask = (freqs >= 20) & (freqs < 16000)
+    y_mono = np.mean(y, axis=0)
+    band_power = {name: 0.0 for name, *_ in BANDS_V2}
+    total_power = 0.0
+    for start in _gated_frames(y_mono, n_fft, hop, gate_db):
+        specL = np.fft.rfft(y[0, start:start + n_fft] * window)
+        specR = np.fft.rfft(y[1, start:start + n_fft] * window)
+        power = (np.abs(specL) ** 2 + np.abs(specR) ** 2) / 2.0
+        for name, mask in band_masks:
+            band_power[name] += float(power[mask].sum())
+        total_power += float(power[total_mask].sum())
+    if total_power <= 0:
+        return {name: None for name, *_ in BANDS_V2}
+    return {name: float(100.0 * band_power[name] / total_power) for name, *_ in BANDS_V2}
 
 
 def measure_stereo(y, sr):
@@ -122,7 +183,27 @@ def measure_stereo(y, sr):
             band_corr[name] = c if np.isfinite(c) else 1.0
         except Exception:
             band_corr[name] = 1.0
-    return {"width": float(width), "mono_db": float(mono_db), "band_corr": band_corr}
+
+    # v2 spec correlation bands (section 3): 20-120/120-500/500-1k Hz,
+    # 4th-order Butterworth. Additive — band_corr above is untouched so
+    # score_stereo() (v1) sees identical inputs.
+    v2_bands = [("sub", 20, 120), ("low-mid", 120, 500), ("mid", 500, 1000)]
+    band_corr_v2 = {}
+    for name, lo, hi in v2_bands:
+        lo_n, hi_n = lo / nyq, min(hi / nyq, .999)
+        if lo_n <= 0 or lo_n >= hi_n:
+            band_corr_v2[name] = 1.0
+            continue
+        try:
+            b, a = signal.butter(4, [lo_n, hi_n], btype="band")
+            Lf, Rf = signal.filtfilt(b, a, L), signal.filtfilt(b, a, R)
+            c = float(np.corrcoef(Lf, Rf)[0, 1])
+            band_corr_v2[name] = c if np.isfinite(c) else 1.0
+        except Exception:
+            band_corr_v2[name] = 1.0
+
+    return {"width": float(width), "mono_db": float(mono_db), "band_corr": band_corr,
+            "band_corr_v2": band_corr_v2}
 
 
 def measure_phase(y, sr):
@@ -157,10 +238,27 @@ def measure_artifacts(y, sr):
     y_mono = np.mean(y, axis=0)
     n = len(y_mono)
 
-    # Clicks: diff > 1.0 (half-scale jump per sample — above 8kHz at 0dBFS; musical content won't reach this)
+    # Clicks: onset-driven candidates confirmed via a median-absolute-deviation
+    # outlier test on the sample-difference signal, robust to loud but
+    # legitimate transients (kicks, snares) that the old fixed threshold
+    # (diff > 1.0) risked either missing or false-positiving on.
     diff = np.abs(np.diff(y_mono))
-    ck_peaks, _ = signal.find_peaks(diff, height=1.0, distance=int(.05 * sr))
-    clicks = len(ck_peaks)
+    med = float(np.median(diff))
+    mad = float(np.median(np.abs(diff - med)))
+    robust_std = mad * 1.4826  # normal-consistent MAD scaling
+    clicks = 0
+    if robust_std > 0:
+        onset_env = librosa.onset.onset_strength(y=y_mono, sr=sr)
+        onset_samples = librosa.frames_to_samples(
+            librosa.onset.onset_detect(onset_envelope=onset_env, sr=sr, backtrack=False))
+        win = max(int(.001 * sr), 1)  # 1ms search window around each onset
+        outlier_thresh = med + 12.0 * robust_std  # conservative: confirmed click, not a normal transient
+        confirmed = set()
+        for center in onset_samples:
+            lo, hi = max(0, center - win), min(len(diff), center + win)
+            if hi > lo and np.max(diff[lo:hi]) > outlier_thresh:
+                confirmed.add(int(np.argmax(diff[lo:hi]) + lo))
+        clicks = len(confirmed)
 
     # Noise floor: only meaningful when the track has genuinely quiet sections (>30dB below peak).
     # For continuously loud/compressed music the 5th-percentile RMS is quiet musical content, not noise.
@@ -198,6 +296,193 @@ def measure_artifacts(y, sr):
 
     return {"clicks": clicks, "noise_floor": noise_floor,
             "zcr_spikes": zcr_spikes, "silence_gaps": gaps}
+
+
+def measure_format(path):
+    """Container, subtype, sample rate, bit depth, channels, duration —
+    via soundfile.info(), no ffprobe/FFmpeg dependency. Not scored."""
+    info = sf.info(path)
+    m = re.search(r"(\d+)", info.subtype or "")
+    bit_depth = int(m.group(1)) if m else None
+    duration_s = float(info.frames / info.samplerate) if info.samplerate else 0.0
+    return {"container": info.format, "subtype": info.subtype,
+            "sample_rate": int(info.samplerate), "bit_depth": bit_depth,
+            "channels": int(info.channels), "duration_s": duration_s}
+
+
+def measure_boundaries(y, sr):
+    """First-sample amplitude, fade-in presence (first 5ms), final 50ms
+    RMS, final fade slope, trailing silence length. Not scored — boundary
+    conditions become hard gates in a later step."""
+    y_mono = np.mean(y, axis=0)
+    n = len(y_mono)
+
+    first_amp = float(np.abs(y_mono[0])) if n else 0.0
+
+    n5 = max(int(.005 * sr), 1)
+    window5 = np.abs(y_mono[:n5])
+    peak5 = float(window5.max()) if len(window5) else 0.0
+    # Fade-in heuristic: first sample sits well below the peak reached
+    # within the first 5ms (a ramp), rather than starting near it.
+    fade_in = bool(peak5 > 0 and first_amp < 0.1 * peak5)
+
+    n50 = max(int(.05 * sr), 1)
+    tail = y_mono[-n50:] if n >= n50 else y_mono
+    final_rms = float(np.sqrt(np.mean(tail ** 2))) if len(tail) else 0.0
+    final_rms_db = float(20 * np.log10(final_rms)) if final_rms > 0 else -120.0
+
+    # Fade slope: linear trend of RMS(dB) across 5 sub-frames of the tail.
+    n_sub = 5
+    sub_len = max(len(tail) // n_sub, 1)
+    sub_dbs = []
+    for i in range(n_sub):
+        seg = tail[i * sub_len:(i + 1) * sub_len]
+        if len(seg) == 0:
+            continue
+        r = float(np.sqrt(np.mean(seg ** 2)))
+        sub_dbs.append(20 * np.log10(r) if r > 0 else -120.0)
+    slope = float(np.polyfit(range(len(sub_dbs)), sub_dbs, 1)[0]) if len(sub_dbs) >= 2 else 0.0
+
+    # Trailing silence: walk backward in 10ms frames while RMS stays below -60 dBFS.
+    frame = max(int(.01 * sr), 1)
+    trailing_silence = 0.0
+    i = n
+    while i - frame >= 0:
+        seg = y_mono[i - frame:i]
+        r = float(np.sqrt(np.mean(seg ** 2)))
+        dbfs = 20 * np.log10(r) if r > 0 else -np.inf
+        if dbfs < -60.0:
+            trailing_silence += frame / sr
+            i -= frame
+        else:
+            break
+
+    return {"first_sample_amplitude": first_amp, "fade_in_present": fade_in,
+            "final_50ms_rms_db": final_rms_db, "final_fade_slope_db_per_frame": slope,
+            "trailing_silence_s": float(trailing_silence)}
+
+
+def measure_balance(y, sr):
+    """L/R RMS imbalance in dB, plus per-band side-channel energy (percentage
+    of total side power, BANDS_V2) — to catch sub content leaking into side."""
+    L, R = y[0], y[1]
+    rms_l = float(np.sqrt(np.mean(L ** 2)))
+    rms_r = float(np.sqrt(np.mean(R ** 2)))
+    lr_imbalance_db = float(20 * np.log10(rms_l / rms_r)) if rms_l > 0 and rms_r > 0 else 0.0
+
+    side = (L - R) * 0.5
+    n_fft, hop, gate_db = 8192, 4096, -60.0
+    n = len(side)
+    side_band_pct = {name: None for name, *_ in BANDS_V2}
+    if n >= n_fft:
+        y_mono = np.mean(y, axis=0)
+        window = np.hanning(n_fft)
+        freqs = np.fft.rfftfreq(n_fft, d=1.0 / sr)
+        band_masks = [(name, (freqs >= lo) & (freqs < hi)) for name, lo, hi in BANDS_V2]
+        total_mask = (freqs >= 20) & (freqs < 16000)
+        band_power = {name: 0.0 for name, *_ in BANDS_V2}
+        total_power = 0.0
+        for start in _gated_frames(y_mono, n_fft, hop, gate_db):
+            power = np.abs(np.fft.rfft(side[start:start + n_fft] * window)) ** 2
+            for name, mask in band_masks:
+                band_power[name] += float(power[mask].sum())
+            total_power += float(power[total_mask].sum())
+        if total_power > 0:
+            side_band_pct = {name: float(100.0 * band_power[name] / total_power)
+                              for name, *_ in BANDS_V2}
+
+    return {"lr_imbalance_db": lr_imbalance_db, "side_band_pct": side_band_pct}
+
+
+def measure_integrity(y, sr, path):
+    """Lossy-content spectral cliff test (energy above 16kHz vs the 8-16kHz
+    mean), dither presence on 16-bit files, momentary max LUFS (400ms)."""
+    y_mono = np.mean(y, axis=0)
+    n = len(y_mono)
+    nyq = sr / 2.0
+
+    cliff_db, cliff_sustained = None, None
+    if nyq > 16000:
+        n_fft, hop, gate_db = 8192, 4096, -60.0
+        if n >= n_fft:
+            freqs = np.fft.rfftfreq(n_fft, d=1.0 / sr)
+            mask_mid = (freqs >= 8000) & (freqs < 16000)
+            mask_high = (freqs >= 16000) & (freqs < nyq)
+            window = np.hanning(n_fft)
+            frame_ratios = []
+            for start in _gated_frames(y_mono, n_fft, hop, gate_db):
+                power = np.abs(np.fft.rfft(y_mono[start:start + n_fft] * window)) ** 2
+                mid_p = float(power[mask_mid].mean()) if mask_mid.any() else 0.0
+                high_p = float(power[mask_high].mean()) if mask_high.any() else 0.0
+                if mid_p > 0:
+                    frame_ratios.append(10 * np.log10(max(high_p, 1e-20) / mid_p))
+            if frame_ratios:
+                cliff_db = float(np.median(frame_ratios))
+                cliff_sustained = bool(np.mean([r < -40 for r in frame_ratios]) >= 0.9)
+
+    # Dither presence on 16-bit PCM: a balanced LSB distribution suggests
+    # dithered quantization; a heavily skewed one suggests truncation.
+    # Coarse heuristic, not a substitute for a real TPDF/noise-shaping test.
+    dither_present = None
+    try:
+        info = sf.info(path)
+        if info.subtype and "16" in info.subtype:
+            raw, _ = sf.read(path, dtype="int16", always_2d=True)
+            ones_ratio = float(np.mean(raw & 1))
+            dither_present = bool(0.35 < ones_ratio < 0.65)
+    except Exception:
+        dither_present = None
+
+    # Momentary max LUFS: 400ms windows, 100ms hop (EBU R128-style).
+    meter = pyln.Meter(sr)
+    win, hop = int(.4 * sr), int(.1 * sr)
+    data = y.T
+    mom_vals = []
+    if data.shape[0] >= win:
+        for i in range(0, data.shape[0] - win, hop):
+            try:
+                v = float(meter.integrated_loudness(data[i:i + win]))
+                if np.isfinite(v):
+                    mom_vals.append(v)
+            except Exception:
+                pass
+    momentary_max_lufs = float(max(mom_vals)) if mom_vals else float("nan")
+
+    return {"spectral_cliff_db": cliff_db, "spectral_cliff_sustained": cliff_sustained,
+            "dither_present": dither_present, "momentary_max_lufs": momentary_max_lufs}
+
+
+def measure_texture(y, sr):
+    """HPSS percussive/harmonic ratio, kick-band energy (post-HPSS) vs sub
+    energy, and spectral flatness — descriptive genre-fit inputs, not scored."""
+    y_mono = np.mean(y, axis=0)
+    harmonic, percussive = librosa.effects.hpss(y_mono)
+
+    rms_h = float(np.sqrt(np.mean(harmonic ** 2)))
+    rms_p = float(np.sqrt(np.mean(percussive ** 2)))
+    if rms_h > 0:
+        perc_harm_ratio = float(rms_p / rms_h)
+    else:
+        perc_harm_ratio = float("inf") if rms_p > 0 else 0.0
+
+    # Kick-band: percussive energy in the kick fundamental/early-harmonic
+    # range (40-100Hz), vs. the track's overall sub-band energy — flags a
+    # sustained sub bassline masking the kick's transient.
+    n_fft = 4096
+    freqs = librosa.fft_frequencies(sr=sr, n_fft=n_fft)
+    Sp = np.abs(librosa.stft(percussive, n_fft=n_fft, hop_length=1024)) ** 2
+    kick_mask = (freqs >= 40) & (freqs < 100)
+    kick_energy = float(np.mean(Sp[kick_mask, :])) if kick_mask.any() else 0.0
+
+    Sm = np.abs(librosa.stft(y_mono, n_fft=n_fft, hop_length=1024)) ** 2
+    sub_mask = (freqs >= 20) & (freqs < 60)
+    sub_energy = float(np.mean(Sm[sub_mask, :])) if sub_mask.any() else 0.0
+    kick_vs_sub = float(kick_energy / sub_energy) if sub_energy > 0 else None
+
+    spectral_flatness = float(np.mean(librosa.feature.spectral_flatness(y=y_mono)))
+
+    return {"percussive_harmonic_ratio": perc_harm_ratio, "kick_vs_sub_energy": kick_vs_sub,
+            "spectral_flatness": spectral_flatness}
 
 
 # ── Scoring (each returns (0-100, [(priority, actionable_msg)]) ───────────────
@@ -469,6 +754,44 @@ def print_measured_data(raw, ref_bands=None):
     nf_str = f"{arts['noise_floor']:.0f} dB" if arts["noise_floor"] is not None else "n/a"
     print(f"  Artifacts   {arts['clicks']} clicks   DC {loud['dc']:+.6f}   noise floor {nf_str}")
 
+    def _na(v, fmt="{:.2f}"):
+        return fmt.format(v) if v is not None else "n/a"
+
+    if "format" in raw:
+        fmt = raw["format"]
+        print(f"  Format      {fmt['container']}/{fmt['subtype']}   {fmt['sample_rate']}Hz   "
+              f"{_na(fmt['bit_depth'], '{:d}')}-bit   {fmt['channels']}ch   {fmt['duration_s']:.1f}s")
+    if "boundaries" in raw:
+        b = raw["boundaries"]
+        fade = "  [fade-in]" if b["fade_in_present"] else ""
+        print(f"  Boundaries  start amp {b['first_sample_amplitude']:.3f}{fade}   "
+              f"end {b['final_50ms_rms_db']:.1f}dB   slope {b['final_fade_slope_db_per_frame']:+.2f}dB/frame   "
+              f"trail silence {b['trailing_silence_s']:.2f}s")
+    if "balance" in raw:
+        bal = raw["balance"]
+        side_row = "   ".join(f"{n} {_na(bal['side_band_pct'].get(n), '{:.1f}')}%"
+                               for n, *_ in BANDS_V2)
+        print(f"  Balance     L/R {bal['lr_imbalance_db']:+.2f}dB")
+        print(f"  Side (%)    {side_row}")
+    if "integrity" in raw:
+        ig = raw["integrity"]
+        cliff = _na(ig["spectral_cliff_db"], "{:.1f}") + "dB"
+        cliff += "  [sustained]" if ig["spectral_cliff_sustained"] else ""
+        print(f"  Integrity   16k+ cliff {cliff}   dither {ig['dither_present']}   "
+              f"momentary max {_na(ig['momentary_max_lufs'], '{:.1f}')} LUFS")
+    if "texture" in raw:
+        tx = raw["texture"]
+        print(f"  Texture     perc/harm {tx['percussive_harmonic_ratio']:.2f}   "
+              f"kick/sub {_na(tx['kick_vs_sub_energy'])}   flatness {tx['spectral_flatness']:.3f}")
+    if "bands_v2" in raw:
+        bv2 = raw["bands_v2"]
+        row = "   ".join(f"{n} {_na(bv2.get(n), '{:.1f}')}%" for n, *_ in BANDS_V2)
+        print(f"  Freq v2 (%) {row}")
+    if "band_corr_v2" in stereo:
+        cv2 = stereo["band_corr_v2"]
+        print(f"  Corr v2     sub(20-120) {cv2['sub']:.2f}   low-mid(120-500) {cv2['low-mid']:.2f}   "
+              f"mid(500-1k) {cv2['mid']:.2f}")
+
 
 def print_track_report(scores, ov, blockers, effort, raw, ref_bands=None, rubric_version=None):
     rv = f"   [rubric {rubric_version}]" if rubric_version else ""
@@ -582,11 +905,17 @@ def resolve_inputs(entries, recursive=False, extensions=None):
 def analyze(path, ref_bands=None):
     y, sr = load_audio(path)
     loud = measure_loudness(y, sr)
-    bands = measure_bands(y, sr)
+    bands = measure_bands_v1(y, sr)
+    bands_v2 = measure_bands(y, sr)
     stereo = measure_stereo(y, sr)
     phase = measure_phase(y, sr)
     dyn = measure_dynamics(y, sr, loud)
     arts = measure_artifacts(y, sr)
+    fmt = measure_format(path)
+    boundaries = measure_boundaries(y, sr)
+    balance = measure_balance(y, sr)
+    integrity = measure_integrity(y, sr, path)
+    texture = measure_texture(y, sr)
 
     t_s, t_i = score_technical(loud)
     f_s, f_i = score_frequency(bands, ref_bands)
@@ -604,7 +933,9 @@ def analyze(path, ref_bands=None):
     return {"file": path, "scores": scores, "overall": ov,
             "blockers": blockers, "effort": effort, "rubric_version": RUBRIC["version"],
             "raw": {"loudness": loud, "bands": bands, "stereo": stereo,
-                    "phase": phase, "dynamics": dyn, "artifacts": arts}}
+                    "phase": phase, "dynamics": dyn, "artifacts": arts,
+                    "bands_v2": bands_v2, "format": fmt, "boundaries": boundaries,
+                    "balance": balance, "integrity": integrity, "texture": texture}}
 
 
 def _clean(obj):
@@ -660,7 +991,7 @@ def main():
     if args.reference:
         try:
             yr, sr_r = load_audio(args.reference)
-            ref_bands = measure_bands(yr, sr_r)
+            ref_bands = measure_bands_v1(yr, sr_r)
         except FileNotFoundError:
             print(f"Error: reference not found: {args.reference}", file=sys.stderr)
             sys.exit(1)

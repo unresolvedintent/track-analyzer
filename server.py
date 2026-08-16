@@ -5,7 +5,7 @@ import os, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from mcp.server.fastmcp import FastMCP
-from analyze import analyze, load_audio, measure_bands, _clean, resolve_inputs, parse_extensions
+from analyze import analyze, load_audio, measure_bands_v1, _clean, resolve_inputs, parse_extensions
 
 mcp = FastMCP(
     "track-analyzer",
@@ -49,7 +49,7 @@ def analyze_tracks(
             return {"error": f"Reference file not found: {reference}"}
         try:
             yr, sr_r = load_audio(reference)
-            ref_bands = measure_bands(yr, sr_r)
+            ref_bands = measure_bands_v1(yr, sr_r)
         except Exception as e:
             return {"error": f"Failed to load reference: {e}"}
 
