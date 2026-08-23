@@ -296,15 +296,19 @@ def score_artifacts(arts):
     """A = 0.70*CLICKS + 0.30*NOISE (spec section 5); renormalizes to
     A = CLICKS when noise floor is unmeasurable. Start/end boundaries and
     silence gaps are reported as data only (measure_boundaries()/arts) —
-    they moved to hard gates and are never scored here."""
+    they moved to hard gates and are never scored here.
+
+    CLICKS is currently pinned to 100 via click_penalty_per=0 in the rubric:
+    the detector false-positives on legitimate percussive transients (see
+    measure_artifacts() in measure.py) and must not affect scoring until an
+    AR-prediction based detector replaces it. Raw click data is still in
+    arts for inspection; no per-track issue is raised for it."""
     cfg = RUBRIC["artifacts"]
     w = cfg["component_weights"]
     issues = []
 
     clicks = arts["clicks"]
     clicks_score = max(0.0, 100.0 - cfg["click_penalty_per"] * clicks)
-    if clicks > 0:
-        issues.append((2, "artifacts_clicks", f"{clicks} click(s) detected — check edit points and clip limiting"))
 
     nf = arts["noise_floor"]
     if nf is None:
@@ -416,7 +420,7 @@ def status_of(s):
     return "PASS" if s >= cfg["pass_at_least"] else ("WARNING" if s >= cfg["warning_at_least"] else "FAIL")
 
 
-def evaluate_gates(loud, phase, stereo, boundaries, integrity, fmt, arts, sr, n_samples, final=False):
+def evaluate_gates(loud, phase, stereo, boundaries, integrity, fmt, final=False):
     """Binary pass/fail hard gates, evaluated separately from the numeric
     score (spec section 6). Returns a list of triggered gate names — any
     non-empty list can override the verdict regardless of OVERALL."""
@@ -431,10 +435,6 @@ def evaluate_gates(loud, phase, stereo, boundaries, integrity, fmt, arts, sr, n_
         gates.append("sustained_negative_correlation")
     if stereo["mono_db"] < cfg["mono_sum_loss_db"]:
         gates.append("mono_sum_loss")
-
-    window = int(cfg["boundary_click_window_ms"] / 1000.0 * sr)
-    if any(p < window or p > n_samples - window for p in arts["click_positions"]):
-        gates.append("boundary_click")
 
     if (boundaries["first_sample_amplitude"] > cfg["hard_start_amp"]
             and not boundaries["fade_in_present"]):

@@ -250,9 +250,13 @@ def measure_artifacts(y, sr):
     n = len(y_mono)
 
     # Clicks: onset-driven candidates confirmed via a median-absolute-deviation
-    # outlier test on the sample-difference signal, robust to loud but
-    # legitimate transients (kicks, snares) that a fixed threshold risks
-    # either missing or false-positiving on.
+    # outlier test on the sample-difference signal. KNOWN FALSE-POSITIVE ISSUE:
+    # this does not actually distinguish real clicks from loud legitimate
+    # transients (kicks, snares, hi-hats) — verified against real darksynth/
+    # industrial masters, where it flags essentially every hard percussive
+    # attack. Scoring/gates ignore this output (see score.py) pending an
+    # AR-prediction / interpolation-residual based detector. Values below
+    # are kept for inspection only.
     diff = np.abs(np.diff(y_mono))
     med = float(np.median(diff))
     mad = float(np.median(np.abs(diff - med)))

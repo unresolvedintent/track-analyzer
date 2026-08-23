@@ -121,8 +121,7 @@ def analyze(path, ref_bands=None, final=False):
               "dynamics": d_s, "artifacts": a_s, "genre": g_s}
     ov = weighted_overall(scores)
 
-    n_samples = y.shape[1]
-    gates = evaluate_gates(loud, phase, stereo, boundaries, integrity, fmt, arts, sr, n_samples, final=final)
+    gates = evaluate_gates(loud, phase, stereo, boundaries, integrity, fmt, final=final)
 
     all_issues = t_i + f_i + st_i + d_i + a_i
     blockers = top_blockers(all_issues)
@@ -225,6 +224,12 @@ def main():
         out = results if len(results) > 1 else results[0]
         print(json.dumps(_clean(out), indent=2))
         return
+
+    print("Note: click/artifact detection is disabled in scoring and gates — the diff/MAD "
+          "detector false-positives on legitimate percussive transients in this genre. Click "
+          "counts shown below are raw candidate data for inspection only, pending an "
+          "AR-prediction based detector.")
+    print()
 
     if len(results) > 1:
         print_ranking(results)

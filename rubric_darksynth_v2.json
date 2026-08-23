@@ -100,7 +100,8 @@
   },
   "artifacts": {
     "component_weights": {"clicks": 0.70, "noise": 0.30},
-    "click_penalty_per": 15,
+    "click_penalty_per": 0,
+    "_click_penalty_per_note": "pinned to 0 (CLICKS always scores 100) — diff/MAD click detector false-positives on legitimate percussive transients in this genre; disabled pending an AR-prediction based detector, see measure.py measure_artifacts()",
     "noise_full_db": -50,
     "noise_mid_db": -40,
     "noise_mid_score": 80,
@@ -113,7 +114,6 @@
     "hard_start_amp": 0.02,
     "hard_start_fade_min_ms": 5,
     "hard_end_rms_db": -45.0,
-    "boundary_click_window_ms": 50,
     "final_sample_rates": [44100, 48000]
   },
   "effort": {
@@ -124,7 +124,6 @@
       "true_peak_exceeded": 1,
       "sustained_negative_correlation": 3,
       "mono_sum_loss": 2,
-      "boundary_click": 2,
       "hard_start": 1,
       "hard_end": 1,
       "lossy_container_final": 1,
@@ -144,7 +143,6 @@
       "dynamics_lra": 1,
       "dynamics_psr": 1,
       "dynamics_crest": 1,
-      "artifacts_clicks": 2,
       "artifacts_noise": 2
     }
   },
