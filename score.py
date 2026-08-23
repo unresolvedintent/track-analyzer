@@ -376,6 +376,15 @@ def weighted_overall(scores):
     return sum(scores[k] * WEIGHTS[k] for k in WEIGHTS)
 
 
+def apply_gate_cap(ov, gates):
+    """If any hard gate fired, cap the displayed OVERALL score — a track
+    cannot show a near-100% score while a gate-level defect (clipping,
+    hard start/end, mono loss, etc.) is present. Only ever lowers ov."""
+    if not gates:
+        return ov
+    return min(ov, float(RUBRIC["verdict"]["gate_overall_cap"]))
+
+
 def top_blockers(all_issues, n=3):
     seen, out = set(), []
     for item in sorted(all_issues, key=lambda x: (x[0], x[2])):

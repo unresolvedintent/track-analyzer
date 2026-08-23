@@ -5,23 +5,65 @@
     "frequency": 0.24,
     "stereo": 0.23,
     "dynamics": 0.18,
-    "artifacts": 0.10
+    "artifacts": 0.1
   },
   "bands": [
-    {"name": "sub",       "lo": 20,    "hi": 60},
-    {"name": "bass",      "lo": 60,    "hi": 250},
-    {"name": "low-mid",   "lo": 250,   "hi": 1000},
-    {"name": "high-mid",  "lo": 1000,  "hi": 6000},
-    {"name": "presence",  "lo": 6000,  "hi": 12000},
-    {"name": "air",       "lo": 12000, "hi": 20000}
+    {
+      "name": "sub",
+      "lo": 20,
+      "hi": 60
+    },
+    {
+      "name": "bass",
+      "lo": 60,
+      "hi": 250
+    },
+    {
+      "name": "low-mid",
+      "lo": 250,
+      "hi": 1000
+    },
+    {
+      "name": "high-mid",
+      "lo": 1000,
+      "hi": 6000
+    },
+    {
+      "name": "presence",
+      "lo": 6000,
+      "hi": 12000
+    },
+    {
+      "name": "air",
+      "lo": 12000,
+      "hi": 20000
+    }
   ],
   "genre_profile": {
-    "sub":      [-3, 5],
-    "bass":     [0, 0],
-    "low-mid":  [-16, -7],
-    "high-mid": [-26, -14],
-    "presence": [-36, -22],
-    "air":      [-52, -30]
+    "sub": [
+      -3,
+      5
+    ],
+    "bass": [
+      0,
+      0
+    ],
+    "low-mid": [
+      -16,
+      -7
+    ],
+    "high-mid": [
+      -26,
+      -14
+    ],
+    "presence": [
+      -36,
+      -22
+    ],
+    "air": [
+      -52,
+      -30
+    ]
   },
   "genre": {
     "fallback_score": 70,
@@ -31,7 +73,13 @@
     "overshoot_soft_penalty": 5
   },
   "technical": {
-    "component_weights": {"tp": 0.40, "clip": 0.25, "lufs": 0.15, "dc": 0.10, "format": 0.10},
+    "component_weights": {
+      "tp": 0.4,
+      "clip": 0.25,
+      "lufs": 0.15,
+      "dc": 0.1,
+      "format": 0.1
+    },
     "tp_full_db": -1.0,
     "tp_slope_per_db": 40,
     "tp_oversample_low_sr_max": 48000,
@@ -41,8 +89,8 @@
     "clip_min_run": 3,
     "clip_confirmed_thresh": 0.9999,
     "lufs_target": -14,
-    "lufs_slope_per_lu": 5,
-    "lufs_floor": 60,
+    "lufs_slope_per_lu": 15,
+    "lufs_floor": 40,
     "dc_full": 0.001,
     "dc_mid": 0.01,
     "dc_mid_score": 70,
@@ -55,31 +103,92 @@
   },
   "frequency": {
     "component_weights": {
-      "sub": 0.15, "bass": 0.15, "low-mid": 0.10, "mud": 0.20,
-      "mid": 0.10, "presence": 0.15, "harsh": 0.10, "air": 0.05
+      "sub": 0.15,
+      "bass": 0.15,
+      "low-mid": 0.1,
+      "mud": 0.2,
+      "mid": 0.1,
+      "presence": 0.15,
+      "harsh": 0.1,
+      "air": 0.05
     },
-    "deviation_curve": [[0, 100], [3, 100], [6, 80], [9, 50], [15, 0]]
+    "deviation_curve": [
+      [
+        0,
+        100
+      ],
+      [
+        3,
+        100
+      ],
+      [
+        6,
+        80
+      ],
+      [
+        9,
+        50
+      ],
+      [
+        15,
+        0
+      ]
+    ]
   },
   "calibration": {
-    "frequency_profile": null,
-    "file_count": 0,
-    "calibrated_at": null
+    "frequency_profile": {
+      "sub": 11.703321006090398,
+      "bass": 23.96117355712225,
+      "low-mid": 15.050269028742795,
+      "mud": 12.151231565737948,
+      "mid": 19.474643628268772,
+      "presence": 8.414622943246911,
+      "harsh": 2.250372389755414,
+      "air": 1.7067239768626135
+    },
+    "frequency_profile_iqr": {
+      "sub": 12.338078509616697,
+      "bass": 16.041184776566297,
+      "low-mid": 5.938668759516318,
+      "mud": 8.675361261462395,
+      "mid": 9.423191925075958,
+      "presence": 3.1321028094668772,
+      "harsh": 1.6234142412203623,
+      "air": 2.174979564097506
+    },
+    "file_count": 8,
+    "calibrated_at": "2026-08-23"
   },
   "frequency_reference": {
     "base": 100,
     "delta_thresholds": [
-      {"gt_db": 9, "penalty": 18},
-      {"gt_db": 6, "penalty": 10},
-      {"gt_db": 3, "penalty": 4}
+      {
+        "gt_db": 9,
+        "penalty": 18
+      },
+      {
+        "gt_db": 6,
+        "penalty": 10
+      },
+      {
+        "gt_db": 3,
+        "penalty": 4
+      }
     ],
     "issue_threshold_db": 3
   },
   "stereo": {
-    "component_weights": {"sub": 0.30, "mono": 0.25, "lowmid": 0.20, "width": 0.15, "balance": 0.10},
-    "sub_corr_full": 0.90,
-    "sub_corr_zero": 0.70,
-    "lowmid_corr_full": 0.50,
-    "lowmid_corr_zero": 0.20,
+    "component_weights": {
+      "sub": 0.3,
+      "mono": 0.25,
+      "lowmid": 0.2,
+      "width": 0.15,
+      "balance": 0.1
+    },
+    "sub_corr_full": 0.95,
+    "sub_corr_zero": 0.75,
+    "lowmid_corr_full": 0.5,
+    "lowmid_corr_zero": 0.2,
     "mono_full_db": -1.0,
     "mono_zero_db": -3.0,
     "width_full": 1.1,
@@ -88,7 +197,11 @@
     "balance_zero_db": 3.0
   },
   "dynamics": {
-    "component_weights": {"lra": 0.60, "psr": 0.25, "crest": 0.15},
+    "component_weights": {
+      "lra": 0.6,
+      "psr": 0.25,
+      "crest": 0.15
+    },
     "lra_full_lo": 4,
     "lra_full_hi": 9,
     "lra_below_slope": 15,
@@ -99,9 +212,12 @@
     "crest_slope_per_db": 15
   },
   "artifacts": {
-    "component_weights": {"clicks": 0.70, "noise": 0.30},
+    "component_weights": {
+      "clicks": 0.7,
+      "noise": 0.3
+    },
     "click_penalty_per": 0,
-    "_click_penalty_per_note": "pinned to 0 (CLICKS always scores 100) — diff/MAD click detector false-positives on legitimate percussive transients in this genre; disabled pending an AR-prediction based detector, see measure.py measure_artifacts()",
+    "_click_penalty_per_note": "pinned to 0 (CLICKS always scores 100) \u2014 diff/MAD click detector false-positives on legitimate percussive transients in this genre; disabled pending an AR-prediction based detector, see measure.py measure_artifacts()",
     "noise_full_db": -50,
     "noise_mid_db": -40,
     "noise_mid_score": 80,
@@ -114,7 +230,10 @@
     "hard_start_amp": 0.02,
     "hard_start_fade_min_ms": 5,
     "hard_end_rms_db": -45.0,
-    "final_sample_rates": [44100, 48000]
+    "final_sample_rates": [
+      44100,
+      48000
+    ]
   },
   "effort": {
     "low_max": 2,
@@ -153,7 +272,9 @@
     "minor_overall_max": 84,
     "needs_overall_min": 60,
     "needs_overall_max": 74,
-    "significant_overall_max": 60
+    "significant_overall_max": 60,
+    "gate_overall_cap": 84,
+    "_gate_overall_cap_note": "if any hard gate fires, displayed OVERALL is capped at this value regardless of the weighted score — a track cannot show near-100% and a gate-level defect at once"
   },
   "status": {
     "pass_at_least": 80,

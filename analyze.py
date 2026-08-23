@@ -16,8 +16,9 @@ from measure import (
 )
 from score import (
     score_technical, score_frequency, score_reference_delta, score_stereo,
-    score_dynamics, score_artifacts, score_genre, weighted_overall, top_blockers,
-    verdict, evaluate_gates, compute_effort, apply_rubric, load_rubric, DEFAULT_RUBRIC_PATH,
+    score_dynamics, score_artifacts, score_genre, weighted_overall, apply_gate_cap,
+    top_blockers, verdict, evaluate_gates, compute_effort, apply_rubric, load_rubric,
+    DEFAULT_RUBRIC_PATH,
 )
 import score as _score  # qualified access to RUBRIC (rebound by --rubric; see score.py docstring)
 from report import print_track_report, print_ranking
@@ -122,6 +123,7 @@ def analyze(path, ref_bands=None, final=False):
     ov = weighted_overall(scores)
 
     gates = evaluate_gates(loud, phase, stereo, boundaries, integrity, fmt, final=final)
+    ov = apply_gate_cap(ov, gates)
 
     all_issues = t_i + f_i + st_i + d_i + a_i
     blockers = top_blockers(all_issues)
