@@ -149,15 +149,37 @@ def score_frequency(bands_v2):
     rubric['calibration']['frequency_profile']. --reference comparisons
     are reported separately by score_reference_delta() and never feed
     into this score (spec: "does not replace the rubric score or alter
-    ranking")."""
+    ranking").
+
+    Tolerance scales per band with the calibration IQR: a band's IQR (in %
+    energy) is converted to a dB width around its median, then normalized
+    against the median IQR-in-dB across all bands, giving a per-band scale
+    factor applied to deviation_curve's breakpoints. Bands where reference
+    masters naturally vary more (e.g. sub-bass) get a proportionally wider
+    curve; bands that are tightly consistent across masters (e.g. harsh)
+    are scored more strictly. A band with missing/degenerate IQR data
+    falls back to the unscaled curve (factor 1.0)."""
     cfg = RUBRIC["frequency"]
     profile = RUBRIC["calibration"]["frequency_profile"]
+    profile_iqr = RUBRIC["calibration"].get("frequency_profile_iqr", {})
     if not profile:
         return None, [(9, None, "Frequency: PROVISIONAL — no calibration profile yet (run calibrate.py)")]
 
     w = cfg["component_weights"]
     curve = cfg["deviation_curve"]
-    deltas, total = {}, 0.0
+
+    iqr_db = {}
+    for name in w:
+        median, iqr = profile.get(name), profile_iqr.get(name)
+        if not median or not iqr:
+            continue
+        lo, hi = median - iqr / 2, median + iqr / 2
+        if lo <= 0 or hi <= lo:
+            continue
+        iqr_db[name] = float(10 * np.log10(hi / lo))
+    typical_iqr_db = float(np.median(list(iqr_db.values()))) if iqr_db else None
+
+    deltas, scales, total = {}, {}, 0.0
     for name, weight in w.items():
         measured, target = bands_v2.get(name), profile.get(name)
         if measured is None or not target:
@@ -165,14 +187,17 @@ def score_frequency(bands_v2):
         else:
             dev_db = float(10 * np.log10(max(measured, 1e-9) / max(target, 1e-9)))
             deltas[name] = dev_db
-            band_score = _interp_curve(abs(dev_db), curve)
+            scale = (iqr_db[name] / typical_iqr_db) if (typical_iqr_db and name in iqr_db) else 1.0
+            scales[name] = scale
+            band_curve = [(x * scale, y) for x, y in curve]
+            band_score = _interp_curve(abs(dev_db), band_curve)
         total += weight * band_score
 
     issues = []
     hz_hint = {"sub": "20-60Hz", "bass": "60-120Hz", "low-mid": "120-250Hz", "mud": "250-500Hz",
                "mid": "500Hz-2kHz", "presence": "2-5kHz", "harsh": "5-8kHz", "air": "8-16kHz"}
     for name, d in sorted(deltas.items(), key=lambda x: abs(x[1]), reverse=True)[:2]:
-        if abs(d) > 3:
+        if abs(d) > curve[1][0] * scales.get(name, 1.0):  # curve[1][0]: dB where the unscaled curve leaves 100
             action = "cut" if d > 0 else "boost"
             issues.append((4, "frequency_band_deviation",
                             f"{name} {d:+.1f}dB vs calibration — {action} {hz_hint.get(name, name)}"))
