@@ -140,19 +140,23 @@ def print_track_report(r):
 
 
 def print_ranking(results):
-    cols = (28, 6, 20, 40, 8)
-    header = f"{'Track':<{cols[0]}} | {'Score':>{cols[1]}} | {'Verdict':<{cols[2]}} | {'Main blocker':<{cols[3]}} | Effort"
+    cols = (28, 6, 9, 20, 40, 8)
+    header = (f"{'Track':<{cols[0]}} | {'Score':>{cols[1]}} | {'Mix score':>{cols[2]}} | "
+              f"{'Verdict':<{cols[3]}} | {'Main blocker':<{cols[4]}} | Effort")
     sep = "-+-".join("-" * c for c in cols)
     print("RANKING")
     print(header)
     print(sep)
-    # Ranking key: (effort_points ascending, OVERALL descending) — spec section 8.
-    for r in sorted(results, key=lambda x: (x["effort_points"], -x["overall"])):
+    # Ranking key: (effort_points ascending, uncapped OVERALL descending) — least
+    # remaining work first; "Score" (gated) is display-only for this ordering,
+    # since a boundary/gate fix doesn't change how much other work is left.
+    for r in sorted(results, key=lambda x: (x["effort_points"], -x["overall_uncapped"])):
         name = os.path.splitext(os.path.basename(r["file"]))[0]
         name = name[:cols[0]-1] if len(name) >= cols[0] else name
-        blocker = (r["blockers"][0][:cols[3]-1] if r["blockers"] else "—")
-        verd = r["verdict"][:cols[2]-1]
+        blocker = (r["blockers"][0][:cols[4]-1] if r["blockers"] else "—")
+        verd = r["verdict"][:cols[3]-1]
         effort_str = f"{r['effort']} ({r['effort_points']})"
         print(f"{name:<{cols[0]}} | {r['overall']:>{cols[1]-1}.0f}% | "
-              f"{verd:<{cols[2]}} | {blocker:<{cols[3]}} | {effort_str}")
+              f"{r['overall_uncapped']:>{cols[2]-1}.0f}% | "
+              f"{verd:<{cols[3]}} | {blocker:<{cols[4]}} | {effort_str}")
     print()

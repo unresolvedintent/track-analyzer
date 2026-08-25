@@ -120,10 +120,10 @@ def analyze(path, ref_bands=None, final=False):
 
     scores = {"technical": t_s, "frequency": f_s, "stereo": st_s,
               "dynamics": d_s, "artifacts": a_s, "genre": g_s}
-    ov = weighted_overall(scores)
+    ov_uncapped = weighted_overall(scores)
 
     gates = evaluate_gates(loud, phase, stereo, boundaries, integrity, fmt, final=final)
-    ov = apply_gate_cap(ov, gates)
+    ov = apply_gate_cap(ov_uncapped, gates)
 
     all_issues = t_i + f_i + st_i + d_i + a_i
     blockers = top_blockers(all_issues)
@@ -137,8 +137,8 @@ def analyze(path, ref_bands=None, final=False):
         reference_delta = {"score": rd_score, "deltas": rd_deltas,
                             "issues": [msg for _, msg in rd_issues]}
 
-    return {"file": path, "scores": scores, "overall": ov, "verdict": v,
-            "blockers": blockers, "gates": gates,
+    return {"file": path, "scores": scores, "overall": ov, "overall_uncapped": ov_uncapped,
+            "verdict": v, "blockers": blockers, "gates": gates,
             "effort_points": effort_points, "effort": effort_bucket,
             "rubric_version": _score.RUBRIC["version"],
             "genre_issues": [msg for _, _, msg in g_i],
