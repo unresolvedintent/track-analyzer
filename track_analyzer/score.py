@@ -6,7 +6,7 @@ functions themselves.
 
 Other modules that need RUBRIC/BANDS/GENRE_PROFILE/WEIGHTS after import
 time (e.g. measure.py, report.py, analyze.py) must access them via
-`import score; score.RUBRIC[...]` rather than `from score import RUBRIC`
+`from . import score; score.RUBRIC[...]` rather than `from .score import RUBRIC`
 — apply_rubric() rebinds these globals when a different rubric is loaded
 (the --rubric flag), and a `from` import would freeze a stale reference
 taken at import time.
@@ -163,7 +163,7 @@ def score_frequency(bands_v2):
     profile = RUBRIC["calibration"]["frequency_profile"]
     profile_iqr = RUBRIC["calibration"].get("frequency_profile_iqr", {})
     if not profile:
-        return None, [(9, None, "Frequency: PROVISIONAL — no calibration profile yet (run calibrate.py)")]
+        return None, [(9, None, "Frequency: PROVISIONAL — no calibration profile yet (run track-analyzer-calibrate)")]
 
     w = cfg["component_weights"]
     curve = cfg["deviation_curve"]

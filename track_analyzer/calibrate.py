@@ -14,13 +14,14 @@ Until this has been run, score_frequency() reports PROVISIONAL.
 import argparse
 import datetime
 import json
+import os
 import sys
 
 import numpy as np
 
-from measure import load_audio, measure_bands, BANDS_V2
-from score import DEFAULT_RUBRIC_PATH, load_rubric
-from analyze import resolve_inputs, parse_extensions, DEFAULT_EXTENSIONS
+from .measure import load_audio, measure_bands, BANDS_V2
+from .score import DEFAULT_RUBRIC_PATH, load_rubric
+from .analyze import resolve_inputs, parse_extensions, DEFAULT_EXTENSIONS
 
 def compute_profile(paths, min_files):
     band_names = [name for name, *_ in BANDS_V2]
@@ -66,7 +67,8 @@ def main():
                         help="Comma-separated extensions to match "
                              f"(default: {','.join(sorted(DEFAULT_EXTENSIONS))})")
     parser.add_argument("--rubric", metavar="JSON", default=DEFAULT_RUBRIC_PATH,
-                        help=f"Rubric file to update (default: {DEFAULT_RUBRIC_PATH})")
+                        help="Rubric file to update "
+                             f"(default: bundled {os.path.basename(DEFAULT_RUBRIC_PATH)})")
     args = parser.parse_args()
 
     try:

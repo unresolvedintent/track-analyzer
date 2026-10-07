@@ -9,19 +9,19 @@ CLI formatting in report.py.
 import argparse, glob, json, os, sys
 import numpy as np
 
-from measure import (
+from .measure import (
     load_audio, measure_loudness, measure_bands_v1, measure_bands, measure_stereo,
     measure_phase, measure_dynamics, measure_artifacts, measure_format,
     measure_boundaries, measure_balance, measure_integrity, measure_texture,
 )
-from score import (
+from .score import (
     score_technical, score_frequency, score_reference_delta, score_stereo,
     score_dynamics, score_artifacts, score_genre, weighted_overall, apply_gate_cap,
     top_blockers, verdict, evaluate_gates, compute_effort, apply_rubric, load_rubric,
     DEFAULT_RUBRIC_PATH,
 )
-import score as _score  # qualified access to RUBRIC (rebound by --rubric; see score.py docstring)
-from report import print_track_report, print_ranking
+from . import score as _score  # qualified access to RUBRIC (rebound by --rubric; see score.py docstring)
+from .report import print_track_report, print_ranking
 
 DEFAULT_EXTENSIONS = {".wav", ".aiff", ".aif", ".flac"}
 
@@ -181,7 +181,8 @@ def main():
                         help="Comma-separated extensions to match in directories "
                              f"(default: {','.join(sorted(DEFAULT_EXTENSIONS))})")
     parser.add_argument("--rubric", metavar="JSON", default=DEFAULT_RUBRIC_PATH,
-                        help=f"Rubric config to score against (default: {DEFAULT_RUBRIC_PATH})")
+                        help="Rubric config to score against "
+                             f"(default: bundled {os.path.basename(DEFAULT_RUBRIC_PATH)})")
     parser.add_argument("--final", action="store_true",
                         help="Also enforce release-format gates: lossless container, "
                              "44.1/48kHz sample rate")

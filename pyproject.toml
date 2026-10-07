@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "track-analyzer"
+version = "0.2.0"
+description = "CLI tool for analyzing WAV files for mix/mastering release readiness (darksynth/industrial rubric)"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "unresolvedintent" }]
+requires-python = ">=3.12"
+dependencies = [
+    "librosa==0.11.0",
+    "pyloudnorm==0.2.0",
+    "scipy==1.18.0",
+    "numpy==2.4.2",
+    "soundfile==0.14.0",
+    "mcp==1.28.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest==9.1.1"]
+
+[project.scripts]
+track-analyzer = "track_analyzer.analyze:main"
+track-analyzer-calibrate = "track_analyzer.calibrate:main"
+track-analyzer-mcp = "track_analyzer.server:main"
+
+[tool.setuptools]
+packages = ["track_analyzer"]
+
+[tool.setuptools.package-data]
+track_analyzer = ["rubric_darksynth_v2.json"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

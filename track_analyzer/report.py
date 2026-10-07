@@ -4,8 +4,8 @@
 import os
 import numpy as np
 
-import score
-from measure import BANDS_V2
+from . import score
+from .measure import BANDS_V2
 
 CATS = [
     ("Technical safety",  "technical"),

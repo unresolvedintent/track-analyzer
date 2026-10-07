@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-"""MCP server: exposes WAV track analysis as a callable tool for Claude Code."""
+"""MCP server: exposes WAV track analysis as a callable tool for Claude Code.
 
-import os, sys
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+Run with `python -m track_analyzer.server` (or the `track-analyzer-mcp` command).
+"""
+
+import os
 
 from mcp.server.fastmcp import FastMCP
-from analyze import analyze, load_audio, measure_bands_v1, _clean, resolve_inputs, parse_extensions
+from .analyze import analyze, load_audio, measure_bands_v1, _clean, resolve_inputs, parse_extensions
 
 mcp = FastMCP(
     "track-analyzer",
@@ -103,5 +105,9 @@ def analyze_tracks(
     return out
 
 
-if __name__ == "__main__":
+def main():
     mcp.run()
+
+
+if __name__ == "__main__":
+    main()

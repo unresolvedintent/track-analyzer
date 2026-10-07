@@ -14,6 +14,9 @@ __pycache__/
 .venv/
 venv/
 .pytest_cache/
+build/
+dist/
+*.egg-info/
 
 # local output
 outputs/

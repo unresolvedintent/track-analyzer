@@ -2,7 +2,7 @@
 """Measurement: audio loading and all measure_* functions. Pure signal
 analysis — no scoring logic here.
 
-Uses `import score` (not `from score import RUBRIC`) to read RUBRIC/BANDS,
+Uses `from . import score` (not `from .score import RUBRIC`) to read RUBRIC/BANDS,
 since apply_rubric() (the --rubric flag) rebinds those globals at runtime;
 a `from` import would freeze a stale reference taken at import time.
 """
@@ -14,7 +14,7 @@ import pyloudnorm as pyln
 import soundfile as sf
 from scipy import signal
 
-import score
+from . import score
 
 # v2 spec's eight-band layout (rubric-v2-spec.md section 2). Kept as a plain
 # constant rather than rubric-driven since only measurement code uses it so

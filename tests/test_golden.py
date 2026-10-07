@@ -4,7 +4,7 @@ gates and scores they must trigger."""
 import numpy as np
 import soundfile as sf
 
-from analyze import analyze
+from track_analyzer.analyze import analyze
 
 SR = 44100
 
