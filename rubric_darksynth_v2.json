@@ -99,7 +99,9 @@
     "format_mp3_high_score": 75,
     "format_mp3_low_score": 60,
     "format_mp3_bitrate_kbps": 256,
-    "format_hidden_lossy_score": 60
+    "format_hidden_lossy_score": 60,
+    "lossy_cliff_db": -40.0,
+    "lossy_cliff_min_fraction": 0.9
   },
   "frequency": {
     "component_weights": {
@@ -134,6 +136,9 @@
         0
       ]
     ]
+  },
+  "calibrate": {
+    "min_files": 8
   },
   "calibration": {
     "frequency_profile": {
@@ -221,7 +226,11 @@
     "noise_full_db": -50,
     "noise_mid_db": -40,
     "noise_mid_score": 80,
-    "noise_high_score": 60
+    "noise_high_score": 60,
+    "click_mad_threshold": 12.0,
+    "click_window_ms": 1,
+    "noise_quiet_below_peak_db": 30,
+    "noise_quiet_min_fraction": 0.01
   },
   "gates": {
     "true_peak_hard_db": -1.0,
@@ -233,7 +242,9 @@
     "final_sample_rates": [
       44100,
       48000
-    ]
+    ],
+    "phase_frame_ms": 100,
+    "hard_start_fade_ratio": 0.1
   },
   "effort": {
     "low_max": 2,
@@ -274,7 +285,7 @@
     "needs_overall_max": 74,
     "significant_overall_max": 60,
     "gate_overall_cap": 84,
-    "_gate_overall_cap_note": "if any hard gate fires, displayed OVERALL is capped at this value regardless of the weighted score — a track cannot show near-100% and a gate-level defect at once"
+    "_gate_overall_cap_note": "if any hard gate fires, displayed OVERALL is capped at this value regardless of the weighted score \u2014 a track cannot show near-100% and a gate-level defect at once"
   },
   "status": {
     "pass_at_least": 80,

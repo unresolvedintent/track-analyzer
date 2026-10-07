@@ -5,12 +5,15 @@
 *.flac
 *.mp3
 *.m4a
+*.ogg
+*.alac
 
 # python
 __pycache__/
 *.pyc
 .venv/
 venv/
+.pytest_cache/
 
 # local output
 outputs/

@@ -109,7 +109,7 @@ def measure_loudness(y, sr):
         over = signal.resample_poly(y[ch], os_factor, 1)
         tp = max(tp, float(np.max(np.abs(over))))
     tp_dbtp = 20.0 * np.log10(tp) if tp > 0 else -120.0
-    clips = int(np.sum(np.any(np.abs(y) >= 0.9999, axis=0)))
+    clips = int(np.sum(np.any(np.abs(y) >= tcfg["clip_confirmed_thresh"], axis=0)))
     confirmed_clip = _has_confirmed_clip_run(y, tcfg["clip_min_run"], tcfg["clip_confirmed_thresh"])
     dc = float(np.max(np.abs([np.mean(y[ch]) for ch in range(y.shape[0])])))
     return {"integrated": integrated, "short_term_max": float(st_max),
@@ -219,7 +219,9 @@ def measure_stereo(y, sr):
 
 def measure_phase(y, sr):
     L, R = y[0], y[1]
-    frame = int(.1 * sr)
+    gcfg = score.RUBRIC["gates"]
+    frame = int(gcfg["phase_frame_ms"] / 1000 * sr)
+    min_frames = int(np.ceil(gcfg["sustained_neg_min_ms"] / gcfg["phase_frame_ms"]))
     corrs = [float(np.corrcoef(L[i:i+frame], R[i:i+frame])[0, 1])
              for i in range(0, len(L) - frame, frame)
              if np.std(L[i:i+frame]) > 1e-9 and np.std(R[i:i+frame]) > 1e-9]
@@ -229,7 +231,7 @@ def measure_phase(y, sr):
     count, sustained = 0, False
     for neg in arr < 0:
         count = (count + 1) if neg else 0
-        if count >= 5:
+        if count >= min_frames:
             sustained = True
             break
     return {"sustained_neg": bool(sustained), "min": float(np.min(arr)),
@@ -257,6 +259,7 @@ def measure_artifacts(y, sr):
     # attack. Scoring/gates ignore this output (see score.py) pending an
     # AR-prediction / interpolation-residual based detector. Values below
     # are kept for inspection only.
+    acfg = score.RUBRIC["artifacts"]
     diff = np.abs(np.diff(y_mono))
     med = float(np.median(diff))
     mad = float(np.median(np.abs(diff - med)))
@@ -266,8 +269,8 @@ def measure_artifacts(y, sr):
         onset_env = librosa.onset.onset_strength(y=y_mono, sr=sr)
         onset_samples = librosa.frames_to_samples(
             librosa.onset.onset_detect(onset_envelope=onset_env, sr=sr, backtrack=False))
-        win = max(int(.001 * sr), 1)  # 1ms search window around each onset
-        outlier_thresh = med + 12.0 * robust_std  # conservative: confirmed click, not a normal transient
+        win = max(int(acfg["click_window_ms"] / 1000 * sr), 1)  # search window around each onset
+        outlier_thresh = med + acfg["click_mad_threshold"] * robust_std  # conservative: confirmed click, not a normal transient
         confirmed = set()
         for center in onset_samples:
             lo, hi = max(0, center - win), min(len(diff), center + win)
@@ -278,14 +281,16 @@ def measure_artifacts(y, sr):
     else:
         click_positions = []
 
-    # Noise floor: only meaningful when the track has genuinely quiet sections (>30dB below peak).
+    # Noise floor: only meaningful when the track has genuinely quiet sections
+    # (noise_quiet_below_peak_db below peak, default 30dB).
     # For continuously loud/compressed music the 5th-percentile RMS is quiet musical content, not noise.
     frame = max(int(.01 * sr), 1)
     rms_db = [20 * np.log10(max(float(np.sqrt(np.mean(y_mono[i:i+frame] ** 2))), 1e-10))
               for i in range(0, n - frame, frame)]
     peak_rms = float(np.max(rms_db)) if rms_db else 0.0
-    quiet = [v for v in rms_db if v < peak_rms - 30]
-    noise_floor = float(np.median(quiet)) if len(quiet) >= len(rms_db) * 0.01 else None
+    quiet = [v for v in rms_db if v < peak_rms - acfg["noise_quiet_below_peak_db"]]
+    noise_floor = (float(np.median(quiet))
+                   if len(quiet) >= len(rms_db) * acfg["noise_quiet_min_fraction"] else None)
 
     # Zero-crossing spikes: abrupt ZCR changes indicating edit glitches
     zcr = np.array([float(np.sum(np.diff(np.signbit(y_mono[i:i+frame]))) / frame)
@@ -329,20 +334,21 @@ def measure_format(path):
 
 
 def measure_boundaries(y, sr):
-    """First-sample amplitude, fade-in presence (first 5ms), final 50ms
+    """First-sample amplitude, fade-in presence (first hard_start_fade_min_ms), final 50ms
     RMS, final fade slope, trailing silence length. Not scored directly —
     feeds the boundary-related hard gates (evaluate_gates())."""
     y_mono = np.mean(y, axis=0)
     n = len(y_mono)
 
+    gcfg = score.RUBRIC["gates"]
     first_amp = float(np.abs(y_mono[0])) if n else 0.0
 
-    n5 = max(int(.005 * sr), 1)
-    window5 = np.abs(y_mono[:n5])
-    peak5 = float(window5.max()) if len(window5) else 0.0
+    n_fade = max(int(gcfg["hard_start_fade_min_ms"] / 1000 * sr), 1)
+    window_fade = np.abs(y_mono[:n_fade])
+    peak_fade = float(window_fade.max()) if len(window_fade) else 0.0
     # Fade-in heuristic: first sample sits well below the peak reached
-    # within the first 5ms (a ramp), rather than starting near it.
-    fade_in = bool(peak5 > 0 and first_amp < 0.1 * peak5)
+    # within the fade window (a ramp), rather than starting near it.
+    fade_in = bool(peak_fade > 0 and first_amp < gcfg["hard_start_fade_ratio"] * peak_fade)
 
     n50 = max(int(.05 * sr), 1)
     tail = y_mono[-n50:] if n >= n50 else y_mono
@@ -419,6 +425,7 @@ def measure_integrity(y, sr, path):
     n = len(y_mono)
     nyq = sr / 2.0
 
+    tcfg = score.RUBRIC["technical"]
     cliff_db, cliff_sustained = None, None
     if nyq > 16000:
         n_fft, hop, gate_db = 8192, 4096, -60.0
@@ -436,7 +443,8 @@ def measure_integrity(y, sr, path):
                     frame_ratios.append(10 * np.log10(max(high_p, 1e-20) / mid_p))
             if frame_ratios:
                 cliff_db = float(np.median(frame_ratios))
-                cliff_sustained = bool(np.mean([r < -40 for r in frame_ratios]) >= 0.9)
+                cliff_sustained = bool(np.mean([r < tcfg["lossy_cliff_db"] for r in frame_ratios])
+                                       >= tcfg["lossy_cliff_min_fraction"])
 
     # Dither presence on 16-bit PCM: a balanced LSB distribution suggests
     # dithered quantization; a heavily skewed one suggests truncation.

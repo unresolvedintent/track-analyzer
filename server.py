@@ -77,12 +77,14 @@ def analyze_tracks(
     else:
         out = {
             "tracks": results,
-            # Ranking key: (effort_points ascending, OVERALL descending) — spec section 8.
+            # Ranking key: (effort_points ascending, uncapped OVERALL descending) —
+            # spec section 8; matches print_ranking() in report.py.
             "summary": sorted(
                 [
                     {
                         "file": r["file"],
                         "overall": r["overall"],
+                        "overall_uncapped": r["overall_uncapped"],
                         "verdict": r["verdict"],
                         "effort": r["effort"],
                         "effort_points": r["effort_points"],
@@ -92,7 +94,7 @@ def analyze_tracks(
                     }
                     for r in results
                 ],
-                key=lambda x: (x["effort_points"], -x["overall"]),
+                key=lambda x: (x["effort_points"], -x["overall_uncapped"]),
             ),
         }
 

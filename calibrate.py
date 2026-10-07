@@ -5,8 +5,9 @@ Takes a folder of reference masters, runs measure_bands() (the v2,
 percentage-of-total-power band measurement) on each, computes the per-band
 median and IQR across the set, and writes the medians into the rubric JSON
 as the target frequency profile that score_frequency() compares tracks
-against. Requires at least 8 usable files — refuses to run on fewer, since
-a profile built from too few masters isn't a reliable genre baseline.
+against. Requires at least rubric['calibrate']['min_files'] (default 8)
+usable files — refuses to run on fewer, since a profile built from too few
+masters isn't a reliable genre baseline.
 Until this has been run, score_frequency() reports PROVISIONAL.
 """
 
@@ -21,10 +22,7 @@ from measure import load_audio, measure_bands, BANDS_V2
 from score import DEFAULT_RUBRIC_PATH, load_rubric
 from analyze import resolve_inputs, parse_extensions, DEFAULT_EXTENSIONS
 
-MIN_FILES = 8
-
-
-def compute_profile(paths):
+def compute_profile(paths, min_files):
     band_names = [name for name, *_ in BANDS_V2]
     values = {name: [] for name in band_names}
     used = []
@@ -42,8 +40,8 @@ def compute_profile(paths):
             values[name].append(bands[name])
         used.append(path)
 
-    if len(used) < MIN_FILES:
-        print(f"Error: only {len(used)} usable file(s), need at least {MIN_FILES}", file=sys.stderr)
+    if len(used) < min_files:
+        print(f"Error: only {len(used)} usable file(s), need at least {min_files}", file=sys.stderr)
         sys.exit(1)
 
     medians, iqrs = {}, {}
@@ -71,6 +69,13 @@ def main():
                         help=f"Rubric file to update (default: {DEFAULT_RUBRIC_PATH})")
     args = parser.parse_args()
 
+    try:
+        rubric = load_rubric(args.rubric)
+    except (OSError, json.JSONDecodeError) as e:
+        print(f"Error: failed to load rubric {args.rubric}: {e}", file=sys.stderr)
+        sys.exit(1)
+    min_files = rubric["calibrate"]["min_files"]
+
     extensions = parse_extensions(args.ext)
     paths, warnings = resolve_inputs([args.folder], recursive=args.recursive, extensions=extensions)
     for w in warnings:
@@ -78,17 +83,11 @@ def main():
     if not paths:
         print("Error: no matching audio files found", file=sys.stderr)
         sys.exit(1)
-    if len(paths) < MIN_FILES:
-        print(f"Error: found {len(paths)} file(s), need at least {MIN_FILES} to calibrate", file=sys.stderr)
+    if len(paths) < min_files:
+        print(f"Error: found {len(paths)} file(s), need at least {min_files} to calibrate", file=sys.stderr)
         sys.exit(1)
 
-    medians, iqrs, used = compute_profile(paths)
-
-    try:
-        rubric = load_rubric(args.rubric)
-    except (OSError, json.JSONDecodeError) as e:
-        print(f"Error: failed to load rubric {args.rubric}: {e}", file=sys.stderr)
-        sys.exit(1)
+    medians, iqrs, used = compute_profile(paths, min_files)
 
     calibrated_at = datetime.date.today().isoformat()
     rubric["calibration"] = {

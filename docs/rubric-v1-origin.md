@@ -1,3 +1,5 @@
+> This is the original v1 scoring prompt (`LT_DARKSYNTH_V1`) that the v2 rubric in `rubric-v2-spec.md` was derived from. Kept for history; it does not describe current behaviour.
+
 Analyze the uploaded audio tracks for production release-readiness using the fixed rubric below.
 
 ## Non-negotiable consistency rules
