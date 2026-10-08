@@ -166,7 +166,7 @@ def _clean(obj):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Track Analyzer — WAV release readiness for darksynth/industrial",
+        description="Track Analyzer - WAV release readiness for darksynth/industrial",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("inputs", nargs="+",
@@ -228,7 +228,7 @@ def main():
         print(json.dumps(_clean(out), indent=2))
         return
 
-    print("Note: click/artifact detection is disabled in scoring and gates — the diff/MAD "
+    print("Note: click/artifact detection is disabled in scoring and gates - the diff/MAD "
           "detector false-positives on legitimate percussive transients in this genre. Click "
           "counts shown below are raw candidate data for inspection only, pending an "
           "AR-prediction based detector.")

@@ -85,22 +85,23 @@ def score_technical(loud, fmt, integrity, path, final=False):
     else:
         tp_score = max(0.0, min(100.0, 100.0 - cfg["tp_slope_per_db"] * (tp_db - cfg["tp_full_db"])))
         # No code: identical trigger to the true_peak_exceeded gate.
-        issues.append((1, None, f"True peak {tp_db:.1f} dBTP — hard limit to {cfg['tp_full_db']:.1f} dBTP before export"))
+        issues.append((1, None, f"True peak {tp_db:.1f} dBTP - hard limit to {cfg['tp_full_db']:.1f} dBTP before export"))
 
     if loud["confirmed_clip"]:
         clip_score = 0.0
         # No code: identical trigger to the confirmed_clipping gate.
-        issues.append((0, None, f"Confirmed clipping ({loud['clips']} sample(s) at full scale) — reduce pre-limiter gain"))
+        issues.append((0, None, f"Confirmed clipping ({loud['clips']} sample(s) at full scale) - reduce pre-limiter gain"))
     else:
         clip_score = 100.0
 
     lufs = loud["integrated"]
     if np.isfinite(lufs):
-        raw = 100.0 - cfg["lufs_slope_per_lu"] * abs(lufs - cfg["lufs_target"])
+        deviation = abs(lufs - cfg["lufs_target"])
+        raw = 100.0 - cfg["lufs_slope_per_lu"] * deviation
         lufs_score = max(cfg["lufs_floor"], min(100.0, raw))
-        if lufs_score < 100.0:
+        if deviation > cfg["lufs_tolerance_lu"]:
             issues.append((2, "lufs_off_target",
-                            f"Integrated {lufs:.1f} LUFS vs {cfg['lufs_target']} target — adjust gain staging"))
+                            f"Integrated {lufs:.1f} LUFS vs {cfg['lufs_target']} target - adjust gain staging"))
     else:
         lufs_score = float(cfg["lufs_floor"])
         issues.append((2, "lufs_off_target", "Integrated loudness could not be measured"))
@@ -111,7 +112,7 @@ def score_technical(loud, fmt, integrity, path, final=False):
     else:
         slope = (cfg["dc_mid_score"] - 100.0) / (cfg["dc_mid"] - cfg["dc_full"])
         dc_score = max(cfg["dc_floor"], 100.0 + slope * (dc - cfg["dc_full"]))
-        issues.append((3, "dc_offset", f"DC offset {dc:.4f} — apply DC filter before export"))
+        issues.append((3, "dc_offset", f"DC offset {dc:.4f} - apply DC filter before export"))
 
     container = (fmt["container"] or "").upper()
     hidden_lossy = bool(integrity.get("spectral_cliff_sustained"))
@@ -120,7 +121,7 @@ def score_technical(loud, fmt, integrity, path, final=False):
         # No code when unconditional: identical trigger to the
         # lossy_content_detected gate (fires regardless of --final).
         issues.append((5, None, "Lossy encoding detected inside container "
-                                 "(spectral cliff above 16kHz) — re-export from an uncompressed master"))
+                                 "(spectral cliff above 16kHz) - re-export from an uncompressed master"))
     elif container in ("WAV", "AIFF", "FLAC"):
         format_score = float(cfg["format_lossless_score"])
     else:
@@ -135,7 +136,7 @@ def score_technical(loud, fmt, integrity, path, final=False):
             format_score = float(cfg["format_mp3_low_score"])
         # No code when --final also gates this exact condition (lossy_container_final).
         code = None if final else "format_lossy"
-        issues.append((5, code, f"Lossy container ({fmt['container']}, ~{kbps:.0f}kbps) — re-export from a lossless master"))
+        issues.append((5, code, f"Lossy container ({fmt['container']}, ~{kbps:.0f}kbps) - re-export from a lossless master"))
 
     t_score = (w["tp"] * tp_score + w["clip"] * clip_score + w["lufs"] * lufs_score +
                w["dc"] * dc_score + w["format"] * format_score)
@@ -163,7 +164,7 @@ def score_frequency(bands_v2):
     profile = RUBRIC["calibration"]["frequency_profile"]
     profile_iqr = RUBRIC["calibration"].get("frequency_profile_iqr", {})
     if not profile:
-        return None, [(9, None, "Frequency: PROVISIONAL — no calibration profile yet (run track-analyzer-calibrate)")]
+        return None, [(9, None, "Frequency: PROVISIONAL - no calibration profile yet (run track-analyzer-calibrate)")]
 
     w = cfg["component_weights"]
     curve = cfg["deviation_curve"]
@@ -200,7 +201,7 @@ def score_frequency(bands_v2):
         if abs(d) > curve[1][0] * scales.get(name, 1.0):  # curve[1][0]: dB where the unscaled curve leaves 100
             action = "cut" if d > 0 else "boost"
             issues.append((4, "frequency_band_deviation",
-                            f"{name} {d:+.1f}dB vs calibration — {action} {hz_hint.get(name, name)}"))
+                            f"{name} {d:+.1f}dB vs calibration - {action} {hz_hint.get(name, name)}"))
 
     return max(0.0, min(100.0, total)), issues
 
@@ -228,7 +229,7 @@ def score_reference_delta(bands_v1, ref_bands_v1):
     for name, d in sorted(deltas.items(), key=lambda x: abs(x[1]), reverse=True)[:2]:
         if abs(d) > cfg["issue_threshold_db"]:
             action = "cut" if d > 0 else "boost"
-            issues.append((4, f"{name} {d:+.1f}dB vs reference — {action} {hz_hint.get(name, name)}"))
+            issues.append((4, f"{name} {d:+.1f}dB vs reference - {action} {hz_hint.get(name, name)}"))
     return max(0, min(100, s)), deltas, issues
 
 
@@ -244,7 +245,7 @@ def score_stereo(stereo, balance):
     sub_c = v2["sub"]
     sub_score = _lerp_score(sub_c, cfg["sub_corr_full"], cfg["sub_corr_zero"])
     if sub_score < 100.0:
-        issues.append((2, "stereo_sub_corr", f"Sub correlation (20-120Hz) {sub_c:.2f} — collapse sub to mono"))
+        issues.append((2, "stereo_sub_corr", f"Sub correlation (20-120Hz) {sub_c:.2f} - collapse sub to mono"))
 
     lm_c, mid_c = v2["low-mid"], v2["mid"]
     lm_score = _lerp_score(lm_c, cfg["lowmid_corr_full"], cfg["lowmid_corr_zero"])
@@ -252,24 +253,24 @@ def score_stereo(stereo, balance):
     lowmid_score = (lm_score + mid_score) / 2.0
     if lowmid_score < 100.0:
         issues.append((6, "stereo_lowmid_corr",
-                        f"Low-mid/mid correlation {lm_c:.2f}/{mid_c:.2f} — narrow width in that range"))
+                        f"Low-mid/mid correlation {lm_c:.2f}/{mid_c:.2f} - narrow width in that range"))
 
     mono_db = stereo["mono_db"]
     mono_score = _lerp_score(mono_db, cfg["mono_full_db"], cfg["mono_zero_db"])
     if mono_score < 100.0:
         # No code once the mono_sum_loss gate also fires (same trigger).
         code = "stereo_mono_loss" if mono_db > cfg["mono_zero_db"] else None
-        issues.append((3, code, f"Mono compat {mono_db:.1f}dB loss — check phase alignment"))
+        issues.append((3, code, f"Mono compat {mono_db:.1f}dB loss - check phase alignment"))
 
     width = stereo["width"]
     width_score = _lerp_score(width, cfg["width_full"], cfg["width_zero"])
     if width_score < 100.0:
-        issues.append((8, "stereo_width", f"Stereo width {width:.2f} M/S ratio — ease off the widener"))
+        issues.append((8, "stereo_width", f"Stereo width {width:.2f} M/S ratio - ease off the widener"))
 
     imbalance = abs(balance["lr_imbalance_db"])
     balance_score = _lerp_score(imbalance, cfg["balance_full_db"], cfg["balance_zero_db"])
     if balance_score < 100.0:
-        issues.append((7, "stereo_balance", f"L/R imbalance {imbalance:.2f}dB — check pan/gain balance"))
+        issues.append((7, "stereo_balance", f"L/R imbalance {imbalance:.2f}dB - check pan/gain balance"))
 
     s_score = (w["sub"] * sub_score + w["mono"] * mono_score + w["lowmid"] * lowmid_score +
                w["width"] * width_score + w["balance"] * balance_score)
@@ -291,10 +292,10 @@ def score_dynamics(dyn, loud):
             lra_score = 100.0
         elif lra < lo:
             lra_score = max(0.0, 100.0 - cfg["lra_below_slope"] * (lo - lra))
-            issues.append((3, "dynamics_lra", f"LRA {lra:.1f} LU — over-compressed, ease limiter threshold"))
+            issues.append((3, "dynamics_lra", f"LRA {lra:.1f} LU - over-compressed, ease limiter threshold"))
         else:
             lra_score = max(0.0, 100.0 - cfg["lra_above_slope"] * (lra - hi))
-            issues.append((7, "dynamics_lra", f"LRA {lra:.1f} LU — very dynamic, may need limiting for streaming"))
+            issues.append((7, "dynamics_lra", f"LRA {lra:.1f} LU - very dynamic, may need limiting for streaming"))
     else:
         lra_score = 0.0
         issues.append((3, "dynamics_lra", "LRA could not be measured"))
@@ -304,14 +305,14 @@ def score_dynamics(dyn, loud):
         psr_score = 100.0
     else:
         psr_score = max(0.0, 100.0 - cfg["psr_slope_per_db"] * (cfg["psr_full_db"] - psr))
-        issues.append((6, "dynamics_psr", f"PSR {psr:.1f}dB — over-limited, increase peak-to-loudness margin"))
+        issues.append((6, "dynamics_psr", f"PSR {psr:.1f}dB - over-limited, increase peak-to-loudness margin"))
 
     crest = dyn["crest"]
     if crest >= cfg["crest_full_db"]:
         crest_score = 100.0
     else:
         crest_score = max(0.0, 100.0 - cfg["crest_slope_per_db"] * (cfg["crest_full_db"] - crest))
-        issues.append((4, "dynamics_crest", f"Crest factor {crest:.1f}dB — heavily limited, check limiter settings"))
+        issues.append((4, "dynamics_crest", f"Crest factor {crest:.1f}dB - heavily limited, check limiter settings"))
 
     d_score = w["lra"] * lra_score + w["psr"] * psr_score + w["crest"] * crest_score
     return max(0.0, min(100.0, d_score)), issues
@@ -343,10 +344,10 @@ def score_artifacts(arts):
             noise_score = 100.0
         elif nf <= cfg["noise_mid_db"]:
             noise_score = float(cfg["noise_mid_score"])
-            issues.append((8, "artifacts_noise", f"Noise floor {nf:.0f}dB — mild background noise"))
+            issues.append((8, "artifacts_noise", f"Noise floor {nf:.0f}dB - mild background noise"))
         else:
             noise_score = float(cfg["noise_high_score"])
-            issues.append((4, "artifacts_noise", f"Noise floor {nf:.0f}dB — check source recordings for hum/hiss"))
+            issues.append((4, "artifacts_noise", f"Noise floor {nf:.0f}dB - check source recordings for hum/hiss"))
         a_score = w["clicks"] * clicks_score + w["noise"] * noise_score
 
     return max(0.0, min(100.0, a_score)), issues

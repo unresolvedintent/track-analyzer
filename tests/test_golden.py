@@ -156,3 +156,21 @@ def test_bundled_rubric_is_consistent():
     assert codes, "found no warning codes in score.py"
     assert codes - set(warning_costs) == set(), "warning codes with no effort cost"
     assert set(warning_costs) - codes == set(), "cost table lists warning codes nothing emits"
+
+
+def _lufs_warning_codes(lufs):
+    loud = {"true_peak": -6.0, "confirmed_clip": False, "clips": 0, "integrated": lufs, "dc": 0.0}
+    fmt = {"container": "WAV", "duration_s": 10.0}
+    _, issues = score.score_technical(loud, fmt, {}, "unused.wav")
+    return [code for _, code, _ in issues if code == "lufs_off_target"]
+
+
+def test_lufs_warning_respects_tolerance():
+    cfg = score.RUBRIC["technical"]
+    target, tol = cfg["lufs_target"], cfg["lufs_tolerance_lu"]
+
+    assert _lufs_warning_codes(target + 1e-5) == []        # float noise around the target
+    assert _lufs_warning_codes(target - tol * 0.9) == []   # inside tolerance, either side
+    assert _lufs_warning_codes(target + tol * 0.9) == []
+    assert _lufs_warning_codes(target - tol * 1.1) == ["lufs_off_target"]
+    assert _lufs_warning_codes(target + tol * 1.1) == ["lufs_off_target"]

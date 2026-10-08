@@ -36,10 +36,10 @@ def analyze_tracks(
     Analyze WAV files for release readiness against the v2 rubric.
 
     Args:
-        paths: One or more paths — each may be an absolute file path, a
+        paths: One or more paths - each may be an absolute file path, a
             directory (non-recursive by default), or a glob pattern.
         reference: Optional reference WAV path for frequency comparison.
-            Reported separately (reference_delta) — never affects the
+            Reported separately (reference_delta) - never affects the
             frequency score, OVERALL, or ranking.
         recursive: When a path is a directory, also scan its subfolders.
             Also enables recursive "**" expansion in glob patterns.

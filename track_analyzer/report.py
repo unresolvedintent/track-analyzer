@@ -52,7 +52,7 @@ def print_measured_data(raw, reference_delta=None):
         def _delta(n):
             d = deltas.get(n)
             return f"{d:+.1f}" if d is not None else "n/a"
-        print(f"  vs ref      {band_row(_delta)}   (informational only — score {reference_delta['score']:.0f}, "
+        print(f"  vs ref      {band_row(_delta)}   (informational only - score {reference_delta['score']:.0f}, "
               f"not part of OVERALL)")
     else:
         print( "  vs ref      no reference")
@@ -106,7 +106,7 @@ def print_measured_data(raw, reference_delta=None):
 
 def print_track_report(r):
     rv = f"   [rubric {r['rubric_version']}]" if r.get("rubric_version") else ""
-    print(f"VERDICT: {r['verdict']} — {r['overall']:.0f}%{rv}")
+    print(f"VERDICT: {r['verdict']} - {r['overall']:.0f}%{rv}")
     print()
     print(f"{'Category':<20} | {'Score':>5} | Status")
     print(f"{'-'*20}-+-{'-'*5}-+-{'-'*7}")
@@ -153,7 +153,7 @@ def print_ranking(results):
     for r in sorted(results, key=lambda x: (x["effort_points"], -x["overall_uncapped"])):
         name = os.path.splitext(os.path.basename(r["file"]))[0]
         name = name[:cols[0]-1] if len(name) >= cols[0] else name
-        blocker = (r["blockers"][0][:cols[4]-1] if r["blockers"] else "—")
+        blocker = (r["blockers"][0][:cols[4]-1] if r["blockers"] else "-")
         verd = r["verdict"][:cols[3]-1]
         effort_str = f"{r['effort']} ({r['effort_points']})"
         print(f"{name:<{cols[0]}} | {r['overall']:>{cols[1]-1}.0f}% | "

@@ -37,7 +37,10 @@ T = 0.40*TP + 0.25*CLIP + 0.15*LUFS + 0.10*DC + 0.10*FORMAT
   warnings only, not automatically confirmed clipping.
 
 - **LUFS**: Target -14 LUFS. `LUFS = clamp(100 - 15*abs(LUFS_I + 14))`, with
-  a floor of 40. Unmeasurable integrated loudness scores the floor.
+  a floor of 40. Unmeasurable integrated loudness scores the floor. The
+  `lufs_off_target` warning (and its effort cost) is only raised when the
+  deviation exceeds 0.5 LU (`lufs_tolerance_lu`); the subscore formula is
+  unchanged.
 
 - **DC**: 100 at <= 0.001; 70 at 0.01; 40 above 0.01; interpolate continuously.
 

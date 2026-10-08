@@ -89,6 +89,7 @@
     "clip_min_run": 3,
     "clip_confirmed_thresh": 0.9999,
     "lufs_target": -14,
+    "lufs_tolerance_lu": 0.5,
     "lufs_slope_per_lu": 15,
     "lufs_floor": 40,
     "dc_full": 0.001,
@@ -101,7 +102,8 @@
     "format_mp3_bitrate_kbps": 256,
     "format_hidden_lossy_score": 60,
     "lossy_cliff_db": -40.0,
-    "lossy_cliff_min_fraction": 0.9
+    "lossy_cliff_min_fraction": 0.9,
+    "_lufs_tolerance_lu_note": "lufs_off_target is only raised (and costs effort) when |LUFS - target| exceeds this; the LUFS subscore itself still applies lufs_slope_per_lu from 0"
   },
   "frequency": {
     "component_weights": {
