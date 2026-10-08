@@ -22,9 +22,7 @@ _SHORT = {"sub": "sub", "bass": "bass", "low-mid": "lo-mid",
 
 def print_measured_data(raw, reference_delta=None):
     loud   = raw["loudness"]
-    bands  = raw["bands"]
     stereo = raw["stereo"]
-    phase  = raw["phase"]
     dyn    = raw["dynamics"]
     arts   = raw["artifacts"]
 
@@ -41,12 +39,6 @@ def print_measured_data(raw, reference_delta=None):
     print("MEASURED DATA")
     print(f"  Loudness    {lufs} LUFS   {loud['true_peak']:.2f} dBTP   "
           f"{lra} LU LRA   {loud['short_term_max']:.1f} LUFS ST max")
-    def _energy(n):
-        v = bands.get(n)
-        return f"{v:.1f}" if v is not None else "n/a"
-    def _corr(n):
-        return f"{stereo['band_corr'].get(n, 1.0):.2f}"
-    print(f"  Freq (dB)   {band_row(_energy)}")
     if reference_delta:
         deltas = reference_delta["deltas"]
         def _delta(n):
@@ -57,16 +49,15 @@ def print_measured_data(raw, reference_delta=None):
     else:
         print( "  vs ref      no reference")
     print(f"  Stereo      width {stereo['width']:.2f}   mono {stereo['mono_db']:+.1f} dB")
-    print(f"  L/R corr    {band_row(_corr)}")
     print(f"  Dynamics    crest {dyn['crest']:.1f} dB   PSR {dyn['psr']:.1f} dB")
-    worst = min(stereo["band_corr"], key=stereo["band_corr"].get)
-    neg   = "   [SUSTAINED NEG]" if phase["sustained_neg"] else ""
-    print(f"  Phase       avg {phase['avg']:.2f}   min {phase['min']:.2f}   worst {worst}{neg}")
     nf_str = f"{arts['noise_floor']:.0f} dB" if arts["noise_floor"] is not None else "n/a"
     print(f"  Artifacts   {arts['clicks']} clicks   DC {loud['dc']:+.6f}   noise floor {nf_str}")
 
     def _na(v, fmt="{:.2f}"):
         return fmt.format(v) if v is not None else "n/a"
+
+    def _pct(v):
+        return f"{v:.1f}%" if v is not None else "n/a"
 
     if "format" in raw:
         fmt = raw["format"]
@@ -80,15 +71,14 @@ def print_measured_data(raw, reference_delta=None):
               f"trail silence {b['trailing_silence_s']:.2f}s")
     if "balance" in raw:
         bal = raw["balance"]
-        side_row = "   ".join(f"{n} {_na(bal['side_band_pct'].get(n), '{:.1f}')}%"
-                               for n, *_ in BANDS_V2)
+        side_row = "   ".join(f"{n} {_pct(bal['side_band_pct'].get(n))}" for n, *_ in BANDS_V2)
         print(f"  Balance     L/R {bal['lr_imbalance_db']:+.2f}dB")
         print(f"  Side (%)    {side_row}")
     if "integrity" in raw:
         ig = raw["integrity"]
         cliff = _na(ig["spectral_cliff_db"], "{:.1f}") + "dB"
         cliff += "  [sustained]" if ig["spectral_cliff_sustained"] else ""
-        print(f"  Integrity   16k+ cliff {cliff}   dither {ig['dither_present']}   "
+        print(f"  Integrity   16k+ cliff {cliff}   dither {_na(ig['dither_present'], '{}')}   "
               f"momentary max {_na(ig['momentary_max_lufs'], '{:.1f}')} LUFS")
     if "texture" in raw:
         tx = raw["texture"]
@@ -96,11 +86,11 @@ def print_measured_data(raw, reference_delta=None):
               f"kick/sub {_na(tx['kick_vs_sub_energy'])}   flatness {tx['spectral_flatness']:.3f}")
     if "bands_v2" in raw:
         bv2 = raw["bands_v2"]
-        row = "   ".join(f"{n} {_na(bv2.get(n), '{:.1f}')}%" for n, *_ in BANDS_V2)
-        print(f"  Freq v2 (%) {row}")
+        row = "   ".join(f"{n} {_pct(bv2.get(n))}" for n, *_ in BANDS_V2)
+        print(f"  Freq (%)    {row}")
     if "band_corr_v2" in stereo:
         cv2 = stereo["band_corr_v2"]
-        print(f"  Corr v2     sub(20-120) {cv2['sub']:.2f}   low-mid(120-500) {cv2['low-mid']:.2f}   "
+        print(f"  Corr        sub(20-120) {cv2['sub']:.2f}   low-mid(120-500) {cv2['low-mid']:.2f}   "
               f"mid(500-1k) {cv2['mid']:.2f}")
 
 
@@ -113,7 +103,9 @@ def print_track_report(r):
     for label, key in CATS:
         sc = r["scores"][key]
         sc_str = f"{sc:.0f}" if sc is not None else "N/A"
-        print(f"{label:<20} | {sc_str:>5} | {score.status_of(sc)}")
+        # Genre fit has no weight in OVERALL, so it gets no pass/fail status.
+        status = "info" if key not in score.WEIGHTS else score.status_of(sc)
+        print(f"{label:<20} | {sc_str:>5} | {status}")
     print()
     print_measured_data(r["raw"], r.get("reference_delta"))
     print()

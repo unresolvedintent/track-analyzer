@@ -18,6 +18,8 @@ Loudness meters report LUFS, true peak and LRA. Feature-extraction libraries suc
 Requires Python 3.12 or newer. The package is not on PyPI; install from a clone of this repository:
 
 ```
+git clone https://github.com/unresolvedintent/track-analyzer
+cd track-analyzer
 pip install .              # regular install
 pip install -e ".[dev]"    # editable install with pytest, for development
 ```
@@ -62,25 +64,22 @@ Frequency balance    |    54 | FAIL
 Stereo / phase       |   100 | PASS
 Dynamics             |    54 | FAIL
 Artifacts            |   100 | PASS
-Genre fit            |    95 | PASS
+Genre fit            |    95 | info
 
 MEASURED DATA
   Loudness    -2.0 LUFS   1.30 dBTP   1.0 LU LRA   -2.0 LUFS ST max
-  Freq (dB)   sub 53.9   bass 45.6   lo-mid 30.1   hi-mid 22.6   pres 11.2   air 11.2
   vs ref      no reference
   Stereo      width 0.00   mono +0.0 dB
-  L/R corr    sub 1.00   bass 1.00   lo-mid 1.00   hi-mid 1.00   pres 1.00   air 1.00
   Dynamics    crest 2.4 dB   PSR 3.3 dB
-  Phase       avg 1.00   min 1.00   worst high-mid
   Artifacts   0 clicks   DC +0.000365   noise floor n/a
   Format      WAV/PCM_24   44100Hz   24-bit   2ch   10.0s
   Boundaries  start amp 1.000   end -5.9dB   slope -3.84dB/frame   trail silence 0.00s
   Balance     L/R +0.00dB
-  Side (%)    sub n/a%   bass n/a%   low-mid n/a%   mud n/a%   mid n/a%   presence n/a%   harsh n/a%   air n/a%
-  Integrity   16k+ cliff 0.0dB   dither None   momentary max -2.0 LUFS
+  Side (%)    sub n/a   bass n/a   low-mid n/a   mud n/a   mid n/a   presence n/a   harsh n/a   air n/a
+  Integrity   16k+ cliff 0.0dB   dither n/a   momentary max -2.0 LUFS
   Texture     perc/harm 0.11   kick/sub 0.00   flatness 0.012
-  Freq v2 (%) sub 70.4%   bass 1.3%   low-mid 19.0%   mud 1.9%   mid 6.4%   presence 0.3%   harsh 0.2%   air 0.5%
-  Corr v2     sub(20-120) 1.00   low-mid(120-500) 1.00   mid(500-1k) 1.00
+  Freq (%)    sub 70.4%   bass 1.3%   low-mid 19.0%   mud 1.9%   mid 6.4%   presence 0.3%   harsh 0.2%   air 0.5%
+  Corr        sub(20-120) 1.00   low-mid(120-500) 1.00   mid(500-1k) 1.00
 
 TOP BLOCKERS
   Confirmed clipping (83586 sample(s) at full scale) - reduce pre-limiter gain
@@ -122,7 +121,7 @@ Genre fit is also reported but has no weight and never affects OVERALL or rankin
 - **Minor work**: exactly one cost-1 gate, or OVERALL 75-84.
 - **Needs work**: anything else.
 
-Category status: PASS at 80 or more, WARNING at 60-79, FAIL below 60.
+Category status: PASS at 80 or more, WARNING at 60-79, FAIL below 60. Genre fit is marked `info` because it is not scored.
 
 ## Rubric changelog: v1 to v2
 
